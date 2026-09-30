@@ -419,7 +419,7 @@ struct HwndTerminal
         _settingsBridge = winrt::make_self<CsBridgeTerminalSettings>();
         _connection = winrt::make_self<CsBridgeConnection>();
         _interactivity = winrt::make_self<implementation::ControlInteractivity>(*_settingsBridge, nullptr, *_connection, dispatcher);
-        _core.copy_from(winrt::get_self<implementation::ControlCore>(_interactivity->Core()));
+        _core = _interactivity->Core();
 
         _core->ScrollPositionChanged({ this, &HwndTerminal::_scrollPositionChanged });
         _interactivity->ScrollPositionChanged({ this, &HwndTerminal::_scrollPositionChanged });
