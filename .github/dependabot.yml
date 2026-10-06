@@ -1,3 +1,7 @@
+# Upstream's Dependabot configuration (weekly, grouped, 7-day cooldown) plus the OverShell fork's:
+# keep the pinned actions in the overshell-* workflows current on the overshell branch. Upstream's
+# own workflows (spelling, project board, winget) are theirs; their actions are ignored on our
+# branch so a sync does not collide with a Dependabot bump.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -9,3 +13,15 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: overshell
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "overshell(actions)"
+    labels: [overshell, dependencies]
+    ignore:
+      - dependency-name: check-spelling/check-spelling
+      - dependency-name: actions/add-to-project
