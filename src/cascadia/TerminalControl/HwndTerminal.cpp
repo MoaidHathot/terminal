@@ -23,6 +23,18 @@ static LPCWSTR term_window_class = L"HwndTerminalClass";
 // The render thread tells the window thread that the engine has a new composition surface.
 static constexpr UINT WM_HWNDTERMINAL_SWAPCHAIN_CHANGED = WM_USER + 0x4F;
 
+// Composition is invisible when it goes wrong - nothing draws - so its steps say what they did
+// to the debugger output, where a host's trace tooling can pick them up.
+template<typename... Args>
+static void _CompositionTrace(const wchar_t* format, Args... args) noexcept
+{
+    wchar_t buffer[512];
+    if (swprintf_s(buffer, format, args...) > 0)
+    {
+        OutputDebugStringW(buffer);
+    }
+}
+
 // One DirectComposition target per top-level window, shared by the composed terminals in it: a
 // window can have only one target, and each terminal is a child visual of its root visual.
 struct HwndTerminal::CompositionTarget
@@ -48,13 +60,16 @@ try
         const auto createDevice = reinterpret_cast<PFN_DCompositionCreateDevice2>(GetProcAddress(module, "DCompositionCreateDevice2"));
         THROW_LAST_ERROR_IF_NULL(createDevice);
         wil::com_ptr<IDCompositionDesktopDevice> device;
-        THROW_IF_FAILED(createDevice(nullptr, IID_PPV_ARGS(device.addressof())));
+        const auto hr = createDevice(nullptr, IID_PPV_ARGS(device.addressof()));
+        _CompositionTrace(L"HwndTerminal composition: DCompositionCreateDevice2 -> 0x%08X\n", static_cast<unsigned>(hr));
+        THROW_IF_FAILED(hr);
         s_compositionDevice = std::move(device);
     }
     return s_compositionDevice.get();
 }
 catch (...)
 {
+    _CompositionTrace(L"HwndTerminal composition: device creation failed 0x%08X\n", static_cast<unsigned>(wil::ResultFromCaughtException()));
     LOG_CAUGHT_EXCEPTION();
     return nullptr;
 }
@@ -80,7 +95,9 @@ try
     auto target = std::make_shared<HwndTerminal::CompositionTarget>();
     target->root = root;
     // topmost: the visual tree sits above the window's child windows, our input-only child included.
-    THROW_IF_FAILED(device->CreateTargetForHwnd(root, TRUE, target->target.addressof()));
+    const auto hr = device->CreateTargetForHwnd(root, TRUE, target->target.addressof());
+    _CompositionTrace(L"HwndTerminal composition: CreateTargetForHwnd(0x%p) -> 0x%08X\n", root, static_cast<unsigned>(hr));
+    THROW_IF_FAILED(hr);
     THROW_IF_FAILED(device->CreateVisual(target->rootVisual.addressof()));
     THROW_IF_FAILED(target->target->SetRoot(target->rootVisual.get()));
     THROW_IF_FAILED(device->Commit());
@@ -89,6 +106,7 @@ try
 }
 catch (...)
 {
+    _CompositionTrace(L"HwndTerminal composition: target for 0x%p failed 0x%08X\n", root, static_cast<unsigned>(wil::ResultFromCaughtException()));
     LOG_CAUGHT_EXCEPTION();
     return nullptr;
 }
@@ -233,6 +251,7 @@ try
         switch (uMsg)
         {
         case WM_HWNDTERMINAL_SWAPCHAIN_CHANGED:
+            _CompositionTrace(L"HwndTerminal composition: 0x%p received the swap chain message\n", hwnd);
             publicTerminal->_ApplyPendingSwapChain();
             return 0;
         case WM_WINDOWPOSCHANGED:
@@ -384,6 +403,7 @@ HRESULT HwndTerminal::Initialize()
         // No HWND: the engine renders into a composition surface and hands us its handle from the
         // render thread whenever it (re)creates the swap chain; the window thread wraps it in the
         // visual. The engine's XAML-scale compensation is for SwapChainPanel hosts, not for us.
+        _CompositionTrace(L"HwndTerminal composition: terminal 0x%p composed (child 0x%p)\n", this, _hwnd.get());
         engine->SetUndoXamlScale(false);
         engine->SetCallback([this](HANDLE handle) noexcept { _OnSwapChainChanged(handle); });
         _ApplyBackgroundOpacity(renderSettings);
@@ -1176,7 +1196,9 @@ try
         _pendingSwapChainHandle = std::move(duplicate);
     }
 
-    if (const auto hwnd = _hwnd.get())
+    const auto hwnd = _hwnd.get();
+    _CompositionTrace(L"HwndTerminal composition: swap chain changed, handle 0x%p, posting to 0x%p\n", handle, hwnd);
+    if (hwnd)
     {
         PostMessageW(hwnd, WM_HWNDTERMINAL_SWAPCHAIN_CHANGED, 0, 0);
     }
@@ -1209,13 +1231,19 @@ try
     }
 
     wil::com_ptr<IUnknown> surface;
-    THROW_IF_FAILED(device->CreateSurfaceFromHandle(handle.get(), surface.addressof()));
+    const auto hr = device->CreateSurfaceFromHandle(handle.get(), surface.addressof());
+    _CompositionTrace(L"HwndTerminal composition: CreateSurfaceFromHandle(0x%p) -> 0x%08X\n", handle.get(), static_cast<unsigned>(hr));
+    THROW_IF_FAILED(hr);
     THROW_IF_FAILED(_compositionVisual->SetContent(surface.get()));
     _swapChainHandle = std::move(handle);
 
     _UpdateComposition();
 }
-CATCH_LOG()
+catch (...)
+{
+    _CompositionTrace(L"HwndTerminal composition: applying the swap chain failed 0x%08X\n", static_cast<unsigned>(wil::ResultFromCaughtException()));
+    LOG_CAUGHT_EXCEPTION();
+}
 
 // Window thread: the visual sits on the child's current top-level window, at the child's position
 // in that window's client area, and only while the child is shown. Cheap enough to call on every
@@ -1273,11 +1301,21 @@ try
             THROW_IF_FAILED(_compositionTarget->rootVisual->AddVisual(_compositionVisual.get(), TRUE, nullptr));
             _compositionVisualAttached = true;
         }
+
+        _CompositionTrace(L"HwndTerminal composition: visual of 0x%p on root 0x%p at (%d,%d) size %dx%d\n", hwnd, root, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+    }
+    else
+    {
+        _CompositionTrace(L"HwndTerminal composition: visual of 0x%p hidden (root 0x%p)\n", hwnd, root);
     }
 
     THROW_IF_FAILED(device->Commit());
 }
-CATCH_LOG()
+catch (...)
+{
+    _CompositionTrace(L"HwndTerminal composition: update failed 0x%08X\n", static_cast<unsigned>(wil::ResultFromCaughtException()));
+    LOG_CAUGHT_EXCEPTION();
+}
 
 void HwndTerminal::_DetachComposition() noexcept
 try
