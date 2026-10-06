@@ -169,7 +169,13 @@ jobs:
             "Upstream base: microsoft/terminal@${upstream}. Patches on top of it: build/overshell/README.md at this tag." \
             "" \
             "Assets: the NuGet package (also on nuget.org as OverShell.Terminal.Wpf), the native PDBs per platform, SHA256SUMS.txt.")"
-          gh release create "wpf-v${VERSION}" --verify-tag --title "OverShell.Terminal.Wpf ${VERSION}" --notes "${notes}" out/packages/*.nupkg out/*.zip out/SHA256SUMS.txt
+          # Idempotent, so a re-run after a failed nuget.org step does not stop here.
+          if gh release view "wpf-v${VERSION}" >/dev/null 2>&1; then
+            echo "release wpf-v${VERSION} exists; replacing its assets"
+            gh release upload "wpf-v${VERSION}" --clobber out/packages/*.nupkg out/*.zip out/SHA256SUMS.txt
+          else
+            gh release create "wpf-v${VERSION}" --verify-tag --title "OverShell.Terminal.Wpf ${VERSION}" --notes "${notes}" out/packages/*.nupkg out/*.zip out/SHA256SUMS.txt
+          fi
 
       - name: NuGet login (OIDC -> short-lived API key)
         id: login
