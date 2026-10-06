@@ -163,11 +163,12 @@ jobs:
         run: |
           set -euo pipefail
           upstream="$(sed -n 's/^commit=//p' build/overshell/UPSTREAM)"
-          notes="OverShell.Terminal.Wpf ${VERSION} - the Windows Terminal WPF control built from this tree.
-
-Upstream base: microsoft/terminal@${upstream}. Patches on top of it: build/overshell/README.md at this tag.
-
-Assets: the NuGet package (also on nuget.org as OverShell.Terminal.Wpf), the native PDBs per platform, SHA256SUMS.txt."
+          notes="$(printf '%s\n' \
+            "OverShell.Terminal.Wpf ${VERSION} - the Windows Terminal WPF control built from this tree." \
+            "" \
+            "Upstream base: microsoft/terminal@${upstream}. Patches on top of it: build/overshell/README.md at this tag." \
+            "" \
+            "Assets: the NuGet package (also on nuget.org as OverShell.Terminal.Wpf), the native PDBs per platform, SHA256SUMS.txt.")"
           gh release create "wpf-v${VERSION}" --verify-tag --title "OverShell.Terminal.Wpf ${VERSION}" --notes "${notes}" out/packages/*.nupkg out/*.zip out/SHA256SUMS.txt
 
       - name: NuGet login (OIDC -> short-lived API key)

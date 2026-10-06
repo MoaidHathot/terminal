@@ -105,13 +105,14 @@ jobs:
         run: |
           set -euo pipefail
           existing="$(gh pr list --head "$BRANCH" --base overshell --state open --json number --jq '.[0].number')"
-          body="Rebases the OverShell patches onto microsoft/terminal \`${TARGET}\` (${SHA}).
-
-- [ ] overshell-ci green on this branch (started by this workflow; a VS-toolset change upstream may need \`vars.OVERSHELL_RUNNER\`)
-- [ ] the OpenCode / OverShell smoke run against the dry-run package passes
-- [ ] merge, then tag \`wpf-v<version>.1\` from \`build/overshell/UPSTREAM\` to release
-
-Opened by overshell-sync."
+          body="$(printf '%s\n' \
+            "Rebases the OverShell patches onto microsoft/terminal \`${TARGET}\` (${SHA})." \
+            "" \
+            "- [ ] overshell-ci green on this branch (started by this workflow; a VS-toolset change upstream may need \`vars.OVERSHELL_RUNNER\`)" \
+            "- [ ] the OverShell smoke run against the dry-run package passes" \
+            "- [ ] merge, then tag \`wpf-v<version>.1\` from \`build/overshell/UPSTREAM\` to release" \
+            "" \
+            "Opened by overshell-sync.")"
           if [[ -z "$existing" ]]; then
             gh pr create --base overshell --head "$BRANCH" --title "Sync to upstream ${TARGET}" --body "$body"
           else
@@ -131,13 +132,14 @@ Opened by overshell-sync."
           set -euo pipefail
           title="Sync to upstream ${TARGET} needs a hand"
           existing="$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')"
-          body="Rebasing the OverShell patches onto \`${TARGET}\` (${SHA}) stopped on conflicts in:
-
-\`\`\`
-${CONFLICTS}
-\`\`\`
-
-Resolve locally (\`git rebase --onto ${SHA} \$(sed -n 's/^commit=//p' build/overshell/UPSTREAM) overshell\`), update \`build/overshell/UPSTREAM\`, push a \`sync/\` branch and open the PR. Opened by overshell-sync."
+          body="$(printf '%s\n' \
+            "Rebasing the OverShell patches onto \`${TARGET}\` (${SHA}) stopped on conflicts in:" \
+            "" \
+            '```' \
+            "${CONFLICTS}" \
+            '```' \
+            "" \
+            "Resolve locally: git rebase --onto ${SHA} \$(sed -n 's/^commit=//p' build/overshell/UPSTREAM) overshell - then update build/overshell/UPSTREAM, push a sync/ branch and open the PR. Opened by overshell-sync.")"
           if [[ -z "$existing" ]]; then
             gh issue create --title "$title" --body "$body"
           else
