@@ -328,6 +328,10 @@ namespace Microsoft::Console::Render::Atlas
         bool useAlpha = false;
         bool useWARP = false;
         bool disablePresent1 = false;
+        // Without a HWND the swap chain is assumed to sit in a XAML SwapChainPanel, which scales it by the
+        // display DPI; the engine applies the inverse so a pixel stays a pixel. A host that composes the
+        // swap chain itself (a DirectComposition visual on its own window) has no such scaling to undo.
+        bool undoXamlScale = true;
         GraphicsAPI graphicsAPI = GraphicsAPI::Automatic;
     };
 

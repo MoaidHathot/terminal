@@ -64,6 +64,30 @@ namespace Microsoft.Terminal.Wpf
         }
 
         /// <summary>
+        /// Gets or sets a value indicating whether the terminal renders through a DirectComposition visual placed on
+        /// the top-level window rather than into its own child HWND. A swap chain presented that way keeps its alpha,
+        /// so <see cref="BackgroundOpacity"/> can let a system backdrop (Mica, acrylic) show through the terminal's
+        /// background. Set it before the control is loaded; the HWND is created once. The visual is composed above
+        /// the window's other content at the control's rectangle, so nothing from the same window can be drawn over
+        /// the terminal - use an owned window for overlays.
+        /// </summary>
+        public bool UseComposition
+        {
+            get => this.termContainer.UseComposition;
+            set => this.termContainer.UseComposition = value;
+        }
+
+        /// <summary>
+        /// Gets or sets the opacity (0..1) of cells with the default background colour. Text and cells with another
+        /// background stay opaque, as in Windows Terminal. Only with <see cref="UseComposition"/>.
+        /// </summary>
+        public double BackgroundOpacity
+        {
+            get => this.termContainer.BackgroundOpacity;
+            set => this.termContainer.BackgroundOpacity = value;
+        }
+
+        /// <summary>
         /// Gets size of the terminal renderer.
         /// </summary>
         private Size TerminalRendererSize

@@ -171,11 +171,38 @@ namespace Microsoft.Terminal.Wpf
             SWP_SHOWWINDOW = 0x0040,
         }
 
+        /// <summary>
+        /// Flags for <see cref="CreateTerminalEx"/>. Keep in sync with HwndTerminal.hpp.
+        /// </summary>
+        [Flags]
+        public enum TerminalCreateFlags : uint
+        {
+            /// <summary>
+            ///     The terminal renders into its child HWND, as it always has.
+            /// </summary>
+            None = 0,
+
+            /// <summary>
+            /// Render through a DirectComposition visual on the top-level window instead of into the child HWND,
+            /// so the terminal's background can be translucent (see <see cref="TerminalSetBackgroundOpacity"/>).
+            /// </summary>
+            Composed = 0x1,
+        }
+
         [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
         public static extern void AvoidBuggyTSFConsoleFlags();
 
         [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = false)]
         public static extern void CreateTerminal(IntPtr parent, out IntPtr hwnd, out IntPtr terminal);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = false)]
+        public static extern void CreateTerminalEx(IntPtr parent, uint flags, out IntPtr hwnd, out IntPtr terminal);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalSetBackgroundOpacity(IntPtr terminal, float opacity);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalUpdateComposition(IntPtr terminal);
 
         [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
         public static extern void TerminalSendOutput(IntPtr terminal, string lpdata);
