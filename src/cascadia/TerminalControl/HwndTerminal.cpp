@@ -404,6 +404,10 @@ HRESULT HwndTerminal::Initialize()
         // render thread whenever it (re)creates the swap chain; the window thread wraps it in the
         // visual. The engine's XAML-scale compensation is for SwapChainPanel hosts, not for us.
         _CompositionTrace(L"HwndTerminal composition: terminal 0x%p composed (child 0x%p)\n", this, _hwnd.get());
+        // The composition device up front: it loads dcomp.dll, which the engine's composition
+        // path needs on its first frame, and a machine without DirectComposition fails here,
+        // at creation, rather than frame after frame in silence.
+        RETURN_HR_IF(E_NOTIMPL, !_GetCompositionDevice());
         engine->SetUndoXamlScale(false);
         engine->SetCallback([this](HANDLE handle) noexcept { _OnSwapChainChanged(handle); });
         _ApplyBackgroundOpacity(renderSettings);
