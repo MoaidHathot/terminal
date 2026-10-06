@@ -366,7 +366,13 @@ bool AtlasEngine::_createSwapChain(HANDLE shutdownEvent)
     }
     else
     {
-        const auto module = GetModuleHandleW(L"dcomp.dll");
+        // A XAML host has dcomp.dll loaded long before we get here; a host that composes the swap
+        // chain itself (a DirectComposition visual on a plain Win32 or WPF window) may not.
+        auto module = GetModuleHandleW(L"dcomp.dll");
+        if (!module)
+        {
+            module = LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        }
         const auto DCompositionCreateSurfaceHandle = GetProcAddressByFunctionDeclaration(module, DCompositionCreateSurfaceHandle);
         THROW_LAST_ERROR_IF(!DCompositionCreateSurfaceHandle);
 

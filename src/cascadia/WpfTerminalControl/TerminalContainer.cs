@@ -316,8 +316,24 @@ namespace Microsoft.Terminal.Wpf
         protected override HandleRef BuildWindowCore(HandleRef hwndParent)
         {
             var dpiScale = VisualTreeHelper.GetDpi(this);
-            var flags = this.UseComposition ? NativeMethods.TerminalCreateFlags.Composed : NativeMethods.TerminalCreateFlags.None;
-            NativeMethods.CreateTerminalEx(hwndParent.Handle, (uint)flags, out this.hwnd, out this.terminal);
+            if (this.UseComposition)
+            {
+                try
+                {
+                    NativeMethods.CreateTerminalEx(hwndParent.Handle, (uint)NativeMethods.TerminalCreateFlags.Composed, out this.hwnd, out this.terminal);
+                }
+                catch (Exception e) when (e is System.Runtime.InteropServices.COMException || e is NotImplementedException || e is EntryPointNotFoundException)
+                {
+                    // No DirectComposition (or an older native library): the plain HWND terminal, opaque.
+                    System.Diagnostics.Debug.WriteLine($"TerminalContainer: composed terminal unavailable ({e.Message}); falling back to the HWND terminal");
+                    this.UseComposition = false;
+                }
+            }
+
+            if (this.terminal == IntPtr.Zero)
+            {
+                NativeMethods.CreateTerminal(hwndParent.Handle, out this.hwnd, out this.terminal);
+            }
 
             this.scrollCallback = this.OnScroll;
             this.writeCallback = this.OnWrite;
