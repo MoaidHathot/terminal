@@ -31,7 +31,8 @@ ours (`Microsoft.*` ids are reserved on nuget.org anyway).
 revision on that base. `build/overshell/UPSTREAM` records the base (`commit=`, `version=A.B.YYMMDD`);
 a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork build of upstream commit
 `9ae724a` (2026-03-02, the 1.25 line - the same commit the third-party `CI.Microsoft.Terminal.Wpf
-1.25.260303002` was built from), and `1.25.260302.2` the second, with a patch.
+1.25.260303002` was built from; unchanged upstream bits, tagged on `rel/1.25.260302.1`), and
+`1.25.260302.2` the second, with patches 2 and 3.
 
 ## The patch series
 
