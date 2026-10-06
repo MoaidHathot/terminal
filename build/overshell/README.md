@@ -38,11 +38,20 @@ a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork buil
 
 Each commit on top of upstream, oldest first. A sync rebases exactly these.
 
-| # | Commit | What | Upstream files touched |
-|---|---|---|---|
-| 1 | build + publish infrastructure | `build/overshell/` (this README, `Build.ps1`, `Pack.ps1`, the nuspec, `UPSTREAM`), `.github/workflows/overshell-{ci,release,sync}.yml`, `.github/dependabot.yml`, `CODEOWNERS` | none |
+| # | What | Upstream files touched |
+|---|---|---|
+| 1 | **Build + publish infrastructure**: `build/overshell/` (this README, `Build.ps1`, `Pack.ps1`, the nuspec, `UPSTREAM`), `.github/workflows/overshell-{ci,release,sync}.yml`, `.github/dependabot.yml`, `CODEOWNERS` | none |
+| 2 | **Composed rendering mode** (`TERMINAL_CREATE_COMPOSED`, `CreateTerminalEx`, `TerminalSetBackgroundOpacity`, `TerminalUpdateComposition`; `TerminalControl.UseComposition` / `BackgroundOpacity`): the terminal renders into a composition surface that the library wraps in a DirectComposition visual on the host's top-level window, over an input-only child HWND (`WS_EX_NOREDIRECTIONBITMAP`), so the swap chain keeps its alpha and the default background can be translucent over the window's backdrop. One composition device per process, one target per top-level window; the visual follows the child's position, size, visibility and re-parenting. Existing callers see no change. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def`, `src/cascadia/WpfTerminalControl/{NativeMethods,TerminalContainer,TerminalControl.xaml}.cs`, and in the engine: `TargetSettings.undoXamlScale` + `AtlasEngine::SetUndoXamlScale` (the SwapChainPanel scale compensation gets an off switch: `common.h`, `AtlasEngine.{h,api.cpp,r.cpp}`) |
+| 3 | **dcomp.dll for the composition path**: `AtlasEngine::_createSwapChain` loads `dcomp.dll` when no XAML host has (under WPF or plain Win32 `GetModuleHandle` returned null and the first frame threw, silently). A one-line fix worth sending upstream. | `src/renderer/atlas/AtlasEngine.r.cpp` |
 
-(Phase 1 - the composed-rendering mode for terminal-body transparency - is added here when it lands.)
+Why a child HWND stays: it keeps focus, keyboard, mouse (hit-testing is rect-based, so a window with
+no pixels still gets the mouse), text services (IME) and UI Automation exactly as upstream has them;
+only the pixels moved. Spike 8 / 8b in the OverShell repository (`spikes/dcomp-transparency`) are the
+measurements behind the shape: a composition swap chain blends with the backdrop only as a visual on
+the **top-level** window (a child-HWND target is non-deterministic, an HWND swap chain ignores alpha),
+and a non-redirected child under a `topmost` target still hit-tests. A host must switch
+`WS_CLIPCHILDREN` off on that window: WPF cannot repaint under a child HWND, so anything it painted
+there before the child covered it would stay as a ghost under the translucent terminal.
 
 ## How a release happens
 
