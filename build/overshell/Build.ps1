@@ -29,6 +29,11 @@
 
 .PARAMETER BinLog
     Where to write the MSBuild binary log (default: msbuild-<Platform>.binlog in the repo root).
+
+.PARAMETER Version
+    The package version (A.B.YYMMDD.N). Stamped on the managed assembly as its informational version;
+    AssemblyVersion stays A.B.0.0 and FileVersion becomes A.B.YYMM.DDNNN, since those fields hold 16 bits
+    each. The native DLL carries no version resource: upstream stamps it with internal tooling (XES).
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +41,8 @@ param(
     [ValidateSet('Release', 'Debug')] [string] $Configuration = 'Release',
     [switch] $Wpf,
     [switch] $SkipRestore,
-    [string] $BinLog
+    [string] $BinLog,
+    [string] $Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,8 +121,18 @@ if (-not $SkipRestore) {
 # ---- 5. build ------------------------------------------------------------------------------------
 $targets = @('Terminal\Control\TerminalControl')
 if ($Wpf) { $targets += 'Terminal\wpf\WpfTerminalControl' }
-Step "msbuild /t:$($targets -join ';') ($Platform $Configuration)"
-& $msbuild OpenConsole.slnx "/t:$($targets -join ';')" /p:Configuration=$Configuration /p:Platform=$Platform /p:WindowsTerminalBranding=Dev /p:PGOBuildMode=None /m /nologo /v:m /nr:false "/bl:$BinLog"
+$versionProps = @()
+if ($Version) {
+    if ($Version -notmatch '^(\d+)\.(\d+)\.(\d\d)(\d\d)(\d\d)\.(\d+)$') { throw "'$Version' is not A.B.YYMMDD.N" }
+    $versionProps = @(
+        "/p:Version=$Version",
+        "/p:AssemblyVersion=$($Matches[1]).$($Matches[2]).0.0",
+        "/p:FileVersion=$($Matches[1]).$($Matches[2]).$($Matches[3])$($Matches[4]).$([int]$Matches[5] * 1000 + [int]$Matches[6])",
+        '/p:ContinuousIntegrationBuild=true'
+    )
+}
+Step "msbuild /t:$($targets -join ';') ($Platform $Configuration$(if ($Version) { ", $Version" }))"
+& $msbuild OpenConsole.slnx "/t:$($targets -join ';')" /p:Configuration=$Configuration /p:Platform=$Platform /p:WindowsTerminalBranding=Dev /p:PGOBuildMode=None @versionProps /m /nologo /v:m /nr:false "/bl:$BinLog"
 if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE); see $BinLog" }
 
 # ---- outputs -------------------------------------------------------------------------------------
