@@ -1,0 +1,5 @@
+# The OverShell fork's own files. Upstream files have no owner here on purpose: a sync rebases them.
+/build/overshell/                       @MoaidHathot
+/.github/workflows/overshell-*.yml      @MoaidHathot
+/.github/dependabot.yml                 @MoaidHathot
+/.github/CODEOWNERS                     @MoaidHathot

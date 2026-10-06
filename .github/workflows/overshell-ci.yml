@@ -1,0 +1,90 @@
+# OverShell's build of the Windows Terminal WPF control: does the tree still compile and pack?
+# Runs for pull requests and pushes on the fork's branches; never publishes anything.
+# See build/overshell/README.md.
+name: overshell-ci
+
+on:
+  pull_request:
+    branches: [overshell]
+  push:
+    branches: [overshell, 'sync/**', 'overshell/**']
+  workflow_dispatch:
+    inputs:
+      arm64:
+        description: Also build ARM64
+        type: boolean
+        default: false
+
+# Fork pull requests run with this read-only token and no secrets (pull_request, not
+# pull_request_target); nothing here needs more.
+permissions:
+  contents: read
+
+concurrency:
+  group: overshell-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    # windows-2022 carries Visual Studio 2022 (v143) and the 10.0.22621 SDK this tree asks for;
+    # upstream's later trees need VS 2026 (windows-latest). The variable switches runners without
+    # a workflow change when the sync moves the base past that point.
+    runs-on: ${{ vars.OVERSHELL_RUNNER || 'windows-2022' }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.arm64 && '["x64", "ARM64"]' || '["x64"]') }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Build (native${{ matrix.platform == 'x64' && ' + WPF' || '' }})
+        run: ./build/overshell/Build.ps1 -Platform ${{ matrix.platform }} ${{ matrix.platform == 'x64' && '-Wpf' || '' }}
+
+      - name: Collect outputs
+        run: |
+          New-Item -ItemType Directory -Force out/${{ matrix.platform }} | Out-Null
+          Copy-Item "bin/${{ matrix.platform }}/Release/Microsoft.Terminal.Control/Microsoft.Terminal.Control.dll" out/${{ matrix.platform }}/
+          Copy-Item "bin/${{ matrix.platform }}/Release/Microsoft.Terminal.Control/Microsoft.Terminal.Control.pdb" out/${{ matrix.platform }}/ -ErrorAction SilentlyContinue
+          if ('${{ matrix.platform }}' -eq 'x64') {
+            Get-ChildItem bin -Recurse -Filter Microsoft.Terminal.Wpf.dll | ForEach-Object {
+              $tfm = $_.Directory.Name
+              New-Item -ItemType Directory -Force "out/wpf/$tfm" | Out-Null
+              Copy-Item (Join-Path $_.DirectoryName 'Microsoft.Terminal.Wpf.*') "out/wpf/$tfm/"
+            }
+          }
+          Get-ChildItem out -Recurse -File | ForEach-Object { '{0,10:N0} KB  {1}' -f ($_.Length / 1KB), $_.FullName.Substring($PWD.Path.Length + 1) }
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: build-${{ matrix.platform }}
+          path: out/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: binlog-${{ matrix.platform }}
+          path: msbuild-${{ matrix.platform }}.binlog
+          if-no-files-found: ignore
+
+  pack:
+    name: pack (dry run)
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: build-*
+          path: artifacts/
+      - name: Pack
+        run: |
+          $platforms = @(Get-ChildItem artifacts -Directory | ForEach-Object { $_.Name -replace '^build-', '' } | Where-Object { $_ -ne 'wpf' })
+          ./build/overshell/Pack.ps1 -Version 0.0.1 -InputRoot artifacts -Platforms $platforms -OutputDirectory out/packages
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: package-dry-run
+          path: out/packages/*.nupkg
