@@ -432,7 +432,7 @@ void AtlasEngine::_resizeBuffers()
 
 void AtlasEngine::_updateMatrixTransform()
 {
-    if (!_p.s->target->hwnd)
+    if (!_p.s->target->hwnd && _p.s->target->undoXamlScale)
     {
         // XAML's SwapChainPanel combines the worst of both worlds and always applies a transform
         // to the swap chain to make it match the display scale. This undoes the damage.

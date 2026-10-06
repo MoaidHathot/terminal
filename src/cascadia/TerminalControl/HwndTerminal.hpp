@@ -18,6 +18,7 @@ namespace Microsoft::Console::Render
     using AtlasEngine = Atlas::AtlasEngine;
     class IRenderData;
     class Renderer;
+    class RenderSettings;
     class UiaEngine;
 }
 
@@ -29,6 +30,18 @@ namespace Microsoft::Terminal::Core
 class FontInfo;
 class FontInfoDesired;
 class HwndTerminalAutomationPeer;
+struct IDCompositionDesktopDevice;
+struct IDCompositionTarget;
+struct IDCompositionVisual2;
+
+// Flags for CreateTerminalEx. Keep in sync with NativeMethods.cs.
+// TERMINAL_CREATE_COMPOSED: the terminal renders into a DirectComposition visual that this library
+// places on the host's top-level window over the child HWND, instead of into the child HWND itself.
+// A swap chain presented that way keeps its alpha channel, so TerminalSetBackgroundOpacity can let
+// whatever is behind the window - a system backdrop, say - show through the terminal's background.
+// The child HWND still exists for input, focus, text services and UI Automation; it just has no
+// pixels of its own (WS_EX_NOREDIRECTIONBITMAP).
+constexpr uint32_t TERMINAL_CREATE_COMPOSED = 0x1;
 
 // Keep in sync with TerminalTheme.cs
 typedef struct _TerminalTheme
@@ -43,6 +56,7 @@ typedef struct _TerminalTheme
 extern "C" {
 __declspec(dllexport) void _stdcall AvoidBuggyTSFConsoleFlags();
 __declspec(dllexport) HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void** terminal);
+__declspec(dllexport) HRESULT _stdcall CreateTerminalEx(HWND parentHwnd, uint32_t flags, _Out_ void** hwnd, _Out_ void** terminal);
 __declspec(dllexport) void _stdcall TerminalSendOutput(void* terminal, LPCWSTR data);
 __declspec(dllexport) void _stdcall TerminalRegisterScrollCallback(void* terminal, void __stdcall callback(int, int, int));
 __declspec(dllexport) HRESULT _stdcall TerminalTriggerResize(_In_ void* terminal, _In_ til::CoordType width, _In_ til::CoordType height, _Out_ til::size* dimensions);
@@ -58,12 +72,24 @@ __declspec(dllexport) void _stdcall TerminalRegisterWriteCallback(void* terminal
 __declspec(dllexport) void _stdcall TerminalSendKeyEvent(void* terminal, WORD vkey, WORD scanCode, WORD flags, bool keyDown);
 __declspec(dllexport) void _stdcall TerminalSendCharEvent(void* terminal, wchar_t ch, WORD flags, WORD scanCode);
 __declspec(dllexport) void _stdcall TerminalSetFocused(void* terminal, bool focused);
+// Composed terminals only (TERMINAL_CREATE_COMPOSED); no-ops otherwise.
+// The opacity (0..1) of cells that have the default background colour; text and coloured cells stay opaque.
+__declspec(dllexport) void _stdcall TerminalSetBackgroundOpacity(void* terminal, float opacity);
+// Re-reads the child HWND's root window, position and visibility and moves the visual accordingly. The
+// library does this itself on WM_WINDOWPOSCHANGED; a host that re-parents the child to another top-level
+// window (SetParent) calls this afterwards.
+__declspec(dllexport) void _stdcall TerminalUpdateComposition(void* terminal);
 };
 
 struct HwndTerminal : ::Microsoft::Console::Types::IControlAccessibilityInfo
 {
 public:
     HwndTerminal(HWND hwnd) noexcept;
+    HwndTerminal(HWND hwnd, uint32_t flags) noexcept;
+
+    // One DirectComposition target per top-level window, shared by the composed terminals in it (see
+    // TERMINAL_CREATE_COMPOSED). Public only so the file-local helpers in HwndTerminal.cpp can name it.
+    struct CompositionTarget;
 
     HwndTerminal(const HwndTerminal&) = default;
     HwndTerminal(HwndTerminal&&) = default;
@@ -123,7 +149,23 @@ private:
     TsfDataProvider _tsfDataProvider{ this };
     Microsoft::Console::TSF::Handle _tsfHandle;
 
+    // Composed rendering (TERMINAL_CREATE_COMPOSED). The engine renders into a composition surface
+    // (no HWND swap chain); this library wraps it in a DirectComposition visual on the child's
+    // top-level window, kept at the child's position and size. One composition device per process,
+    // one target per top-level window, shared by every composed terminal in it.
+    bool _composed{ false };
+    float _backgroundOpacity{ 1.0f };
+    std::shared_ptr<CompositionTarget> _compositionTarget;
+    wil::com_ptr<IDCompositionVisual2> _compositionVisual;
+    bool _compositionVisualAttached{ false };
+    wil::unique_handle _swapChainHandle;
+    std::mutex _pendingSwapChainLock;
+    wil::unique_handle _pendingSwapChainHandle;
+
     friend HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void** terminal);
+    friend HRESULT _stdcall CreateTerminalEx(HWND parentHwnd, uint32_t flags, _Out_ void** hwnd, _Out_ void** terminal);
+    friend void _stdcall TerminalSetBackgroundOpacity(void* terminal, float opacity);
+    friend void _stdcall TerminalUpdateComposition(void* terminal);
     friend HRESULT _stdcall TerminalTriggerResize(_In_ void* terminal, _In_ til::CoordType width, _In_ til::CoordType height, _Out_ til::size* dimensions);
     friend HRESULT _stdcall TerminalTriggerResizeWithDimension(_In_ void* terminal, _In_ til::size dimensions, _Out_ til::size* dimensionsInPixels);
     friend HRESULT _stdcall TerminalCalculateResize(_In_ void* terminal, _In_ til::CoordType width, _In_ til::CoordType height, _Out_ til::size* dimensions);
@@ -143,6 +185,12 @@ private:
     void _PasteTextFromClipboard() noexcept;
 
     void _setFocused(bool focused) noexcept;
+
+    void _ApplyBackgroundOpacity(::Microsoft::Console::Render::RenderSettings& renderSettings) noexcept;
+    void _OnSwapChainChanged(HANDLE handle) noexcept;
+    void _ApplyPendingSwapChain() noexcept;
+    void _UpdateComposition() noexcept;
+    void _DetachComposition() noexcept;
 
     const unsigned int _NumberOfClicks(til::point clickPos, std::chrono::steady_clock::time_point clickTime) noexcept;
     HRESULT _StartSelection(LPARAM lParam) noexcept;
