@@ -1,0 +1,187 @@
+# OverShell's release of the Windows Terminal WPF control: a tag `wpf-vA.B.YYMMDD.N` builds x64 and
+# ARM64, packs OverShell.Terminal.Wpf A.B.YYMMDD.N, attaches the package and the native symbols to a
+# GitHub release, and pushes the package to nuget.org through Trusted Publishing (NuGet/login:
+# GitHub's OIDC token exchanged for a one-hour key against a policy on nuget.org that names this
+# repository and this workflow file - no long-lived secret anywhere). A dispatched run is a dry run:
+# it builds and packs with the version given and leaves the package as a workflow artifact.
+# See build/overshell/README.md.
+name: overshell-release
+
+on:
+  push:
+    tags: ['wpf-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version for the dry run (A.B.YYMMDD.N); nothing is tagged or published
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overshell-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: version
+    # Only this repository publishes; a fork of the fork that pushes a tag gets nothing.
+    if: github.repository == 'MoaidHathot/terminal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            version="${GITHUB_REF_NAME#wpf-v}"
+            publish=true
+          else
+            version="${{ inputs.version }}"
+            publish=false
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a package version (A.B.YYMMDD.N)"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "OverShell.Terminal.Wpf $version (publish: $publish)"
+
+  build:
+    name: build ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ vars.OVERSHELL_RUNNER || 'windows-2022' }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: true
+      matrix:
+        platform: [x64, ARM64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Build (native${{ matrix.platform == 'x64' && ' + WPF' || '' }})
+        run: ./build/overshell/Build.ps1 -Platform ${{ matrix.platform }} ${{ matrix.platform == 'x64' && '-Wpf' || '' }}
+
+      - name: Collect outputs
+        run: |
+          New-Item -ItemType Directory -Force out/${{ matrix.platform }}, symbols/${{ matrix.platform }} | Out-Null
+          Copy-Item "bin/${{ matrix.platform }}/Release/Microsoft.Terminal.Control/Microsoft.Terminal.Control.dll" out/${{ matrix.platform }}/
+          Copy-Item "bin/${{ matrix.platform }}/Release/Microsoft.Terminal.Control/Microsoft.Terminal.Control.pdb" symbols/${{ matrix.platform }}/
+          if ('${{ matrix.platform }}' -eq 'x64') {
+            Get-ChildItem bin -Recurse -Filter Microsoft.Terminal.Wpf.dll | ForEach-Object {
+              $tfm = $_.Directory.Name
+              New-Item -ItemType Directory -Force "out/wpf/$tfm" | Out-Null
+              Copy-Item (Join-Path $_.DirectoryName 'Microsoft.Terminal.Wpf.*') "out/wpf/$tfm/"
+            }
+          }
+          Get-ChildItem out, symbols -Recurse -File | ForEach-Object { '{0,10:N0} KB  {1}' -f ($_.Length / 1KB), $_.FullName.Substring($PWD.Path.Length + 1) }
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: build-${{ matrix.platform }}
+          path: out/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: symbols-${{ matrix.platform }}
+          path: symbols/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: binlog-${{ matrix.platform }}
+          path: msbuild-${{ matrix.platform }}.binlog
+          if-no-files-found: ignore
+
+  pack:
+    name: pack
+    needs: [version, build]
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: build-*
+          path: artifacts/
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: symbols-*
+          path: symbols/
+      - name: Pack
+        run: |
+          ./build/overshell/Pack.ps1 -Version $env:VERSION -InputRoot artifacts -Platforms x64, arm64 -OutputDirectory out/packages
+          Compress-Archive -Path symbols/* -DestinationPath "out/OverShell.Terminal.Wpf.$env:VERSION.native-symbols.zip"
+          Get-FileHash out/packages/*.nupkg, out/*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } | Set-Content out/SHA256SUMS.txt
+          Get-ChildItem out -Recurse -File | ForEach-Object { '{0,10:N0} KB  {1}' -f ($_.Length / 1KB), $_.Name }
+          Get-Content out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: release-${{ env.VERSION }}
+          path: |
+            out/packages/*.nupkg
+            out/*.zip
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    name: GitHub release + nuget.org
+    needs: [version, pack]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write   # the GitHub release and its assets
+      id-token: write   # the OIDC token NuGet/login exchanges for a short-lived API key
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-${{ env.VERSION }}
+          path: out/
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream="$(sed -n 's/^commit=//p' build/overshell/UPSTREAM)"
+          notes="OverShell.Terminal.Wpf ${VERSION} - the Windows Terminal WPF control built from this tree.
+
+Upstream base: microsoft/terminal@${upstream}. Patches on top of it: build/overshell/README.md at this tag.
+
+Assets: the NuGet package (also on nuget.org as OverShell.Terminal.Wpf), the native PDBs per platform, SHA256SUMS.txt."
+          gh release create "wpf-v${VERSION}" --verify-tag --title "OverShell.Terminal.Wpf ${VERSION}" --notes "${notes}" out/packages/*.nupkg out/*.zip out/SHA256SUMS.txt
+
+      - name: NuGet login (OIDC -> short-lived API key)
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: NuGet push
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pkg in out/packages/*.nupkg; do
+            dotnet nuget push "$pkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          done

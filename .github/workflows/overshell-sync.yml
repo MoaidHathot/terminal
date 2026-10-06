@@ -1,0 +1,146 @@
+# Keeps the OverShell branch current with upstream: every week (and on demand) the fork's commits
+# are rebased onto microsoft/terminal's newest release tag on a `sync/<tag>` branch, CI is started
+# for it, and a pull request is opened for a human to merge. A rebase conflict leaves an issue
+# instead of a branch. Nothing is merged or published here. See build/overshell/README.md.
+name: overshell-sync
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream ref to sync to (a tag like v1.26.2734.0 or a commit); default = the newest v* release tag
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overshell-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: rebase onto upstream
+    if: github.repository == 'MoaidHathot/terminal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write        # the sync/<tag> branch
+      pull-requests: write   # the pull request
+      issues: write          # the conflict report
+      actions: write         # to start overshell-ci on the new branch (a bot push does not trigger it)
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: overshell
+          fetch-depth: 0
+
+      - name: Find the upstream target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/microsoft/terminal.git
+          git fetch --quiet upstream 'refs/tags/v*:refs/tags/v*' main
+          if [[ -n "${{ inputs.ref }}" ]]; then
+            target="${{ inputs.ref }}"
+            git fetch --quiet upstream "$target" || true
+          else
+            # Release tags are vA.B.C.D; the newest by version, not by date.
+            target="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*.[0-9]*' | sort -t. -k1,1V -k2,2n -k3,3n -k4,4n | tail -n 1)"
+          fi
+          sha="$(git rev-parse --verify "${target}^{commit}")"
+          base="$(sed -n 's/^commit=//p' build/overshell/UPSTREAM)"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          if [[ "$sha" == "$base" ]]; then
+            echo "already on $target ($sha)"; echo "uptodate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "base $base -> $target ($sha)"; echo "uptodate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase the fork's commits onto it
+        if: steps.target.outputs.uptodate != 'true'
+        id: rebase
+        shell: bash
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+          SHA: ${{ steps.target.outputs.sha }}
+          BASE: ${{ steps.target.outputs.base }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          branch="sync/${TARGET//\//-}"
+          git switch -c "$branch" overshell
+          if git rebase --onto "$SHA" "$BASE" "$branch"; then
+            date="$(git show -s --format=%cd --date=format:%y%m%d "$SHA")"
+            minor="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$SHA" 2>/dev/null | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/' || true)"
+            [[ -n "$minor" ]] || minor="$(sed -n 's/^version=//p' build/overshell/UPSTREAM | cut -d. -f1,2)"
+            printf 'commit=%s\nref=%s\nversion=%s.%s\n' "$SHA" "$TARGET" "$minor" "$date" > build/overshell/UPSTREAM
+            git add build/overshell/UPSTREAM
+            git commit -q -m "overshell: sync to upstream $TARGET ($SHA)"
+            git push --force-with-lease origin "$branch"
+            echo "branch=$branch" >> "$GITHUB_OUTPUT"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt || true
+            git rebase --abort || true
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "conflicts<<EOF" >> "$GITHUB_OUTPUT"; cat /tmp/conflicts.txt >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the pull request and start CI
+        if: steps.target.outputs.uptodate != 'true' && steps.rebase.outputs.conflict == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.target.outputs.target }}
+          SHA: ${{ steps.target.outputs.sha }}
+          BRANCH: ${{ steps.rebase.outputs.branch }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head "$BRANCH" --base overshell --state open --json number --jq '.[0].number')"
+          body="Rebases the OverShell patches onto microsoft/terminal \`${TARGET}\` (${SHA}).
+
+- [ ] overshell-ci green on this branch (started by this workflow; a VS-toolset change upstream may need \`vars.OVERSHELL_RUNNER\`)
+- [ ] the OpenCode / OverShell smoke run against the dry-run package passes
+- [ ] merge, then tag \`wpf-v<version>.1\` from \`build/overshell/UPSTREAM\` to release
+
+Opened by overshell-sync."
+          if [[ -z "$existing" ]]; then
+            gh pr create --base overshell --head "$BRANCH" --title "Sync to upstream ${TARGET}" --body "$body"
+          else
+            echo "PR #$existing already open for $BRANCH; updated by the push"
+          fi
+          gh workflow run overshell-ci.yml --ref "$BRANCH"
+
+      - name: Report a conflict
+        if: steps.target.outputs.uptodate != 'true' && steps.rebase.outputs.conflict == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.target.outputs.target }}
+          SHA: ${{ steps.target.outputs.sha }}
+          CONFLICTS: ${{ steps.rebase.outputs.conflicts }}
+        run: |
+          set -euo pipefail
+          title="Sync to upstream ${TARGET} needs a hand"
+          existing="$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')"
+          body="Rebasing the OverShell patches onto \`${TARGET}\` (${SHA}) stopped on conflicts in:
+
+\`\`\`
+${CONFLICTS}
+\`\`\`
+
+Resolve locally (\`git rebase --onto ${SHA} \$(sed -n 's/^commit=//p' build/overshell/UPSTREAM) overshell\`), update \`build/overshell/UPSTREAM\`, push a \`sync/\` branch and open the PR. Opened by overshell-sync."
+          if [[ -z "$existing" ]]; then
+            gh issue create --title "$title" --body "$body"
+          else
+            gh issue comment "$existing" --body "Still conflicting on $(date -u +%F): ${CONFLICTS//$'\n'/, }"
+          fi
+          exit 1

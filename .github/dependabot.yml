@@ -1,0 +1,17 @@
+# OverShell's fork: keep the pinned actions in the overshell-* workflows current. Upstream's own
+# workflows (spelling, project board) are theirs; their actions are ignored here so a sync does not
+# collide with a Dependabot bump.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: overshell
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "overshell(actions)"
+    labels: [overshell, dependencies]
+    ignore:
+      - dependency-name: check-spelling/check-spelling
+      - dependency-name: actions/add-to-project
