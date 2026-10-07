@@ -68,6 +68,12 @@ there before the child covered it would stay as a ghost under the translucent te
 
 ## How a sync happens
 
+The first real run (base `9ae724a` -> `v1.26.2734.0`) ended in
+[issue #2](https://github.com/MoaidHathot/terminal/issues/2), as it should: upstream added a
+`.github/dependabot.yml` since the base, as the fork did, so the rebase stops on that file. The
+resolution is the human's - merge the two Dependabot files - and a 1.26 base will also want
+`vars.OVERSHELL_RUNNER` moved to a VS 2026 image if upstream's toolset floor moved with it.
+
 `overshell-sync` runs weekly (and on demand, optionally with an explicit upstream ref): it finds
 upstream's newest `vA.B.C.D` tag, rebases the patch series from the recorded base onto it on a
 `sync/<tag>` branch, updates `UPSTREAM`, pushes, opens a pull request and starts `overshell-ci` for
@@ -102,7 +108,12 @@ pinned to the newest installed toolset, the three restores, then
 ## Safety
 
 - Workflows run with a read-only `GITHUB_TOKEN`; the release job alone gets `contents: write` and
-  `id-token: write`, the sync job `contents`/`pull-requests`/`issues`/`actions: write`.
+  `id-token: write`, the sync job `contents`/`pull-requests`/`issues`/`actions: write`. The
+  repository setting *Allow GitHub Actions to create and approve pull requests* is on for the
+  sync job's pull request (it is the only workflow here that opens one; a fork's pull request still
+  runs with a read-only token); issues are enabled so a conflict has somewhere to go. The sync job
+  uses the REST endpoints for both: the GraphQL `createIssue` mutation refuses a forked
+  repository's `GITHUB_TOKEN`.
 - CI uses `pull_request`, never `pull_request_target`: a fork's PR runs with no secrets and cannot
   publish. Release and sync refuse to run outside `MoaidHathot/terminal`.
 - Third-party actions are pinned to commit SHAs; Dependabot keeps them current.
