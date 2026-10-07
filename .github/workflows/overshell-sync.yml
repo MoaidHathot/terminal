@@ -81,7 +81,10 @@ jobs:
             date="$(git show -s --format=%cd --date=format:%y%m%d "$SHA")"
             minor="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$SHA" 2>/dev/null | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/' || true)"
             [[ -n "$minor" ]] || minor="$(sed -n 's/^version=//p' build/overshell/UPSTREAM | cut -d. -f1,2)"
-            printf 'commit=%s\nref=%s\nversion=%s.%s\n' "$SHA" "$TARGET" "$minor" "$date" > build/overshell/UPSTREAM
+            # A tree that builds with the v145 toolset (VS 2026) needs windows-latest; a v143 tree,
+            # windows-2022 (the only hosted image with the 10.0.22621 SDK).
+            if git show "$SHA:src/common.build.pre.props" | grep -q 'v145'; then runner=windows-latest; else runner=windows-2022; fi
+            printf 'commit=%s\nref=%s\nversion=%s.%s\nrunner=%s\n' "$SHA" "$TARGET" "$minor" "$date" "$runner" > build/overshell/UPSTREAM
             git add build/overshell/UPSTREAM
             git commit -q -m "overshell: sync to upstream $TARGET ($SHA)"
             git push --force-with-lease origin "$branch"

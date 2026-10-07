@@ -28,7 +28,7 @@ ours (`Microsoft.*` ids are reserved on nuget.org anyway).
 ## Versions
 
 `A.B.YYMMDD.N`: upstream release branch `A.B`, the date of the upstream base commit, and the fork's
-revision on that base. `build/overshell/UPSTREAM` records the base (`commit=`, `version=A.B.YYMMDD`);
+revision on that base. `build/overshell/UPSTREAM` records the base (`commit=`, `version=A.B.YYMMDD`, `runner=`);
 a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork build of upstream commit
 `9ae724a` (2026-03-02, the 1.25 line - the same commit the third-party `CI.Microsoft.Terminal.Wpf
 1.25.260303002` was built from; unchanged upstream bits, tagged on `rel/1.25.260302.1`), and
@@ -82,9 +82,11 @@ then tags. Nothing is merged or published without a person.
 
 Two things to expect from upstream over time:
 
-- **Toolset moves.** This base wants Visual Studio 2022 (v143) and the 10.0.22621 SDK, which the
-  `windows-2022` runner has; upstream `main` now wants VS 2026, which `windows-latest` has. The
-  repository variable `OVERSHELL_RUNNER` picks the runner without a workflow change.
+- **Toolset moves.** This base wants Visual Studio 2022 (v143) and the 10.0.22621 SDK, which only
+  the `windows-2022` runner has; 1.26 and `main` want VS 2026 (v145) and the 10.0.26100 SDK, which
+  `windows-latest` has. The runner is part of the tree (`runner=` in `UPSTREAM`): the sync picks
+  `windows-latest` when the target's `common.build.pre.props` names v145, so each branch builds on
+  the image it needs; the repository variable `OVERSHELL_RUNNER` overrides for a one-off.
 - **The pack target changes.** Upstream's `WpfTerminalControl.csproj` collects the native DLLs
   itself; we pack with our own nuspec from the built files, so that target's shape does not matter.
 

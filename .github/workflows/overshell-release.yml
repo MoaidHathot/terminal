@@ -34,11 +34,18 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
+      runner: ${{ steps.v.outputs.runner }}
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: v
         shell: bash
         run: |
           set -euo pipefail
+          # The build runner comes from the tree (build/overshell/UPSTREAM, see overshell-ci.yml).
+          runner="${{ vars.OVERSHELL_RUNNER }}"
+          [[ -n "$runner" ]] || runner="$(sed -n 's/^runner=//p' build/overshell/UPSTREAM)"
+          [[ -n "$runner" ]] || runner=windows-2022
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             version="${GITHUB_REF_NAME#wpf-v}"
             publish=true
@@ -51,12 +58,12 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "OverShell.Terminal.Wpf $version (publish: $publish)"
+          echo "OverShell.Terminal.Wpf $version (publish: $publish, runner: $runner)"
 
   build:
     name: build ${{ matrix.platform }}
     needs: version
-    runs-on: ${{ vars.OVERSHELL_RUNNER || 'windows-2022' }}
+    runs-on: ${{ needs.version.outputs.runner }}
     timeout-minutes: 180
     strategy:
       fail-fast: true
