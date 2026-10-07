@@ -1,3 +1,4 @@
 commit=9ae724aa5b080aafbeea2bbf88db630b182cc802
 ref=release-1.25 (the commit CI.Microsoft.Terminal.Wpf 1.25.260303002 was built from)
 version=1.25.260302
+runner=windows-2022
