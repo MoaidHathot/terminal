@@ -32,7 +32,8 @@ revision on that base. `build/overshell/UPSTREAM` records the base (`commit=`, `
 a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork build of upstream commit
 `9ae724a` (2026-03-02, the 1.25 line - the same commit the third-party `CI.Microsoft.Terminal.Wpf
 1.25.260303002` was built from; unchanged upstream bits, tagged on `rel/1.25.260302.1`), and
-`1.25.260302.2` the second, with patches 2 and 3.
+`1.25.260302.2` the second, with patches 2 and 3. `1.26.260930.1` is the first build on upstream
+`v1.26.2734.0` (2026-09-30), the series rebased by the first sync.
 
 ## The patch series
 
@@ -41,7 +42,7 @@ Each commit on top of upstream, oldest first. A sync rebases exactly these.
 | # | What | Upstream files touched |
 |---|---|---|
 | 1 | **Build + publish infrastructure**: `build/overshell/` (this README, `Build.ps1`, `Pack.ps1`, the nuspec, `UPSTREAM`), `.github/workflows/overshell-{ci,release,sync}.yml`, `.github/dependabot.yml`, `CODEOWNERS` | none |
-| 2 | **Composed rendering mode** (`TERMINAL_CREATE_COMPOSED`, `CreateTerminalEx`, `TerminalSetBackgroundOpacity`, `TerminalUpdateComposition`; `TerminalControl.UseComposition` / `BackgroundOpacity`): the terminal renders into a composition surface that the library wraps in a DirectComposition visual on the host's top-level window, over an input-only child HWND (`WS_EX_NOREDIRECTIONBITMAP`), so the swap chain keeps its alpha and the default background can be translucent over the window's backdrop. One composition device per process, one target per top-level window; the visual follows the child's position, size, visibility and re-parenting. Existing callers see no change. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def`, `src/cascadia/WpfTerminalControl/{NativeMethods,TerminalContainer,TerminalControl.xaml}.cs`, and in the engine: `TargetSettings.undoXamlScale` + `AtlasEngine::SetUndoXamlScale` (the SwapChainPanel scale compensation gets an off switch: `common.h`, `AtlasEngine.{h,api.cpp,r.cpp}`) |
+| 2 | **Composed rendering mode** (`TERMINAL_CREATE_COMPOSED`, `CreateTerminalEx`, `TerminalSetBackgroundOpacity`, `TerminalUpdateComposition`; `TerminalControl.UseComposition` / `BackgroundOpacity`): the terminal renders into a composition surface that the library wraps in a DirectComposition visual on the host's top-level window, over an input-only child HWND (`WS_EX_NOREDIRECTIONBITMAP`, which upstream itself adopted in 1.26), so the swap chain keeps its alpha and the default background can be translucent over the window's backdrop. One composition device per process, one target per top-level window; the visual follows the child's position, size, visibility and re-parenting. Existing callers see no change. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def`, `src/cascadia/WpfTerminalControl/{NativeMethods,TerminalContainer,TerminalControl.xaml}.cs`, and in the engine: `TargetSettings.undoXamlScale` + `AtlasEngine::SetUndoXamlScale` (the SwapChainPanel scale compensation gets an off switch: `common.h`, `AtlasEngine.{h,api.cpp,r.cpp}`) |
 | 3 | **dcomp.dll for the composition path**: `AtlasEngine::_createSwapChain` loads `dcomp.dll` when no XAML host has (under WPF or plain Win32 `GetModuleHandle` returned null and the first frame threw, silently). A one-line fix worth sending upstream. | `src/renderer/atlas/AtlasEngine.r.cpp` |
 
 Why a child HWND stays: it keeps focus, keyboard, mouse (hit-testing is rect-based, so a window with
@@ -79,6 +80,22 @@ upstream's newest `vA.B.C.D` tag, rebases the patch series from the recorded bas
 `sync/<tag>` branch, updates `UPSTREAM`, pushes, opens a pull request and starts `overshell-ci` for
 it. Conflicts leave an issue with the file list instead. A human reviews the PR, checks CI, merges,
 then tags. Nothing is merged or published without a person.
+
+**How a sync lands.** Not with the merge button. The branch *is* "upstream plus the patch series",
+and a merge commit would end that - the next rebase would have nothing linear to replay - so a
+reviewed, green sync branch replaces `overshell` outright:
+
+```powershell
+git fetch origin
+git push --force-with-lease=overshell:$(git rev-parse origin/overshell) origin sync/<tag>:overshell
+```
+
+GitHub marks the pull request merged (its head is now the base), the branch ruleset lets only the
+repository administrator force-update `overshell` (the sync branch, like any other, takes normal
+pushes), and the next sync rebases from the new base recorded in `UPSTREAM`. If `overshell` moved
+after the sync branch was cut, cherry-pick those commits onto the sync branch first and let CI run
+again. Each sync leaves one "sync to upstream" commit (the `UPSTREAM` update) in the series; they
+re-apply cleanly on the next rebase and are harmless, if a little noisy.
 
 Two things to expect from upstream over time:
 
