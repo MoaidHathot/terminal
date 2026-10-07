@@ -32,7 +32,7 @@ jobs:
     outputs:
       runner: ${{ steps.p.outputs.runner }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: p
         shell: bash
         # The runner comes from the tree: a 1.25 base wants VS 2022 (v143) and the 10.0.22621 SDK,
@@ -56,7 +56,7 @@ jobs:
       matrix:
         platform: ${{ fromJSON(inputs.arm64 && '["x64", "ARM64"]' || '["x64"]') }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build (native${{ matrix.platform == 'x64' && ' + WPF' || '' }})
         run: ./build/overshell/Build.ps1 -Platform ${{ matrix.platform }} ${{ matrix.platform == 'x64' && '-Wpf' || '' }}
@@ -94,7 +94,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: build-*
