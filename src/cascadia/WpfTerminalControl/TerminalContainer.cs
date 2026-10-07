@@ -25,6 +25,7 @@ namespace Microsoft.Terminal.Wpf
         private IntPtr terminal;
         private NativeMethods.ScrollCallback scrollCallback;
         private NativeMethods.WriteCallback writeCallback;
+        private double backgroundOpacity = 1.0;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TerminalContainer"/> class.
@@ -39,6 +40,10 @@ namespace Microsoft.Terminal.Wpf
             this.MessageHook += this.TerminalContainer_MessageHook;
             this.GotFocus += this.TerminalContainer_GotFocus;
             this.Focusable = true;
+
+            // A composed terminal's visual sits on the top-level window; when the element moves to
+            // another window (the host re-parents the child HWND), the visual has to move too.
+            PresentationSource.AddSourceChangedHandler(this, this.TerminalContainer_SourceChanged);
         }
 
         /// <summary>
@@ -56,6 +61,31 @@ namespace Microsoft.Terminal.Wpf
         /// on user action.
         /// </summary>
         internal bool AutoResize { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the terminal renders through a DirectComposition visual on the
+        /// top-level window instead of into its child HWND, which lets <see cref="BackgroundOpacity"/> show what is
+        /// behind the window through the terminal's background. Must be set before the control is loaded; it is
+        /// read once, when the HWND is created.
+        /// </summary>
+        internal bool UseComposition { get; set; }
+
+        /// <summary>
+        /// Gets or sets the opacity (0..1) of cells with the default background colour; text and coloured cells stay
+        /// opaque. Takes effect only with <see cref="UseComposition"/>.
+        /// </summary>
+        internal double BackgroundOpacity
+        {
+            get => this.backgroundOpacity;
+            set
+            {
+                this.backgroundOpacity = Math.Max(0.0, Math.Min(1.0, value));
+                if (this.terminal != IntPtr.Zero)
+                {
+                    NativeMethods.TerminalSetBackgroundOpacity(this.terminal, (float)this.backgroundOpacity);
+                }
+            }
+        }
 
         /// <summary>
         /// Gets or sets the size of the parent user control that hosts the terminal hwnd.
@@ -286,13 +316,35 @@ namespace Microsoft.Terminal.Wpf
         protected override HandleRef BuildWindowCore(HandleRef hwndParent)
         {
             var dpiScale = VisualTreeHelper.GetDpi(this);
-            NativeMethods.CreateTerminal(hwndParent.Handle, out this.hwnd, out this.terminal);
+            if (this.UseComposition)
+            {
+                try
+                {
+                    NativeMethods.CreateTerminalEx(hwndParent.Handle, (uint)NativeMethods.TerminalCreateFlags.Composed, out this.hwnd, out this.terminal);
+                }
+                catch (Exception e) when (e is System.Runtime.InteropServices.COMException || e is NotImplementedException || e is EntryPointNotFoundException)
+                {
+                    // No DirectComposition (or an older native library): the plain HWND terminal, opaque.
+                    System.Diagnostics.Debug.WriteLine($"TerminalContainer: composed terminal unavailable ({e.Message}); falling back to the HWND terminal");
+                    this.UseComposition = false;
+                }
+            }
+
+            if (this.terminal == IntPtr.Zero)
+            {
+                NativeMethods.CreateTerminal(hwndParent.Handle, out this.hwnd, out this.terminal);
+            }
 
             this.scrollCallback = this.OnScroll;
             this.writeCallback = this.OnWrite;
 
             NativeMethods.TerminalRegisterScrollCallback(this.terminal, this.scrollCallback);
             NativeMethods.TerminalRegisterWriteCallback(this.terminal, this.writeCallback);
+
+            if (this.UseComposition && this.backgroundOpacity < 1.0)
+            {
+                NativeMethods.TerminalSetBackgroundOpacity(this.terminal, (float)this.backgroundOpacity);
+            }
 
             // If the saved DPI scale isn't the default scale, we push it to the terminal.
             if (dpiScale.PixelsPerInchX != NativeMethods.USER_DEFAULT_SCREEN_DPI)
@@ -328,6 +380,14 @@ namespace Microsoft.Terminal.Wpf
         {
             e.Handled = true;
             NativeMethods.SetFocus(this.hwnd);
+        }
+
+        private void TerminalContainer_SourceChanged(object sender, SourceChangedEventArgs e)
+        {
+            if (this.UseComposition && this.terminal != IntPtr.Zero && e.NewSource != null)
+            {
+                NativeMethods.TerminalUpdateComposition(this.terminal);
+            }
         }
 
         private IntPtr TerminalContainer_MessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)

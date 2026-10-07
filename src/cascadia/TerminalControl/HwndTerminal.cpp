@@ -6,6 +6,7 @@
 
 #include <DefaultSettings.h>
 #include <windowsx.h>
+#include <dcomp.h>
 
 #include "HwndTerminalAutomationPeer.hpp"
 #include "../../cascadia/TerminalCore/Terminal.hpp"
@@ -18,6 +19,79 @@ using namespace ::Microsoft::Console::VirtualTerminal;
 using namespace ::Microsoft::Terminal::Core;
 
 static LPCWSTR term_window_class = L"HwndTerminalClass";
+
+// The render thread tells the window thread that the engine has a new composition surface.
+static constexpr UINT WM_HWNDTERMINAL_SWAPCHAIN_CHANGED = WM_USER + 0x4F;
+
+// One DirectComposition target per top-level window, shared by the composed terminals in it: a
+// window can have only one target, and each terminal is a child visual of its root visual.
+struct HwndTerminal::CompositionTarget
+{
+    HWND root = nullptr;
+    wil::com_ptr<IDCompositionTarget> target;
+    wil::com_ptr<IDCompositionVisual2> rootVisual;
+};
+
+// Lives on the UI thread, like everything else here; dcomp.dll is loaded on first use so that a
+// host that never asks for a composed terminal never pays for it.
+static wil::com_ptr<IDCompositionDesktopDevice> s_compositionDevice;
+static std::unordered_map<HWND, std::weak_ptr<HwndTerminal::CompositionTarget>> s_compositionTargets;
+
+static IDCompositionDesktopDevice* _GetCompositionDevice() noexcept
+try
+{
+    if (!s_compositionDevice)
+    {
+        static const auto module = LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        THROW_LAST_ERROR_IF_NULL(module);
+        using PFN_DCompositionCreateDevice2 = HRESULT(WINAPI*)(IUnknown*, REFIID, void**);
+        const auto createDevice = reinterpret_cast<PFN_DCompositionCreateDevice2>(GetProcAddress(module, "DCompositionCreateDevice2"));
+        THROW_LAST_ERROR_IF_NULL(createDevice);
+        wil::com_ptr<IDCompositionDesktopDevice> device;
+        THROW_IF_FAILED(createDevice(nullptr, IID_PPV_ARGS(device.addressof())));
+        s_compositionDevice = std::move(device);
+    }
+    return s_compositionDevice.get();
+}
+catch (...)
+{
+    LOG_CAUGHT_EXCEPTION();
+    return nullptr;
+}
+
+static std::shared_ptr<HwndTerminal::CompositionTarget> _GetCompositionTarget(HWND root) noexcept
+try
+{
+    if (const auto it = s_compositionTargets.find(root); it != s_compositionTargets.end())
+    {
+        if (auto existing = it->second.lock())
+        {
+            return existing;
+        }
+        s_compositionTargets.erase(it);
+    }
+
+    const auto device = _GetCompositionDevice();
+    if (!device)
+    {
+        return nullptr;
+    }
+
+    auto target = std::make_shared<HwndTerminal::CompositionTarget>();
+    target->root = root;
+    // topmost: the visual tree sits above the window's child windows, our input-only child included.
+    THROW_IF_FAILED(device->CreateTargetForHwnd(root, TRUE, target->target.addressof()));
+    THROW_IF_FAILED(device->CreateVisual(target->rootVisual.addressof()));
+    THROW_IF_FAILED(target->target->SetRoot(target->rootVisual.get()));
+    THROW_IF_FAILED(device->Commit());
+    s_compositionTargets[root] = target;
+    return target;
+}
+catch (...)
+{
+    LOG_CAUGHT_EXCEPTION();
+    return nullptr;
+}
 
 STDMETHODIMP HwndTerminal::TsfDataProvider::QueryInterface(REFIID, void**) noexcept
 {
@@ -158,6 +232,17 @@ try
 
         switch (uMsg)
         {
+        case WM_HWNDTERMINAL_SWAPCHAIN_CHANGED:
+            publicTerminal->_ApplyPendingSwapChain();
+            return 0;
+        case WM_WINDOWPOSCHANGED:
+            // Moved, sized, shown or hidden (HwndHost hides the child when its element is collapsed):
+            // the visual follows. DefWindowProc still runs, so WM_SIZE/WM_MOVE are generated as before.
+            if (publicTerminal->_composed)
+            {
+                publicTerminal->_UpdateComposition();
+            }
+            break;
         case WM_GETOBJECT:
             if (lParam == UiaRootObjectId)
             {
@@ -200,6 +285,7 @@ try
             }
             CATCH_LOG();
         case WM_DESTROY:
+            publicTerminal->_DetachComposition();
             // Release Terminal's hwnd so Teardown doesn't try to destroy it again
             publicTerminal->_hwnd.release();
             publicTerminal->Teardown();
@@ -239,19 +325,27 @@ static bool RegisterTermClass(HINSTANCE hInstance) noexcept
 }
 
 HwndTerminal::HwndTerminal(HWND parentHwnd) noexcept :
+    HwndTerminal(parentHwnd, 0)
+{
+}
+
+HwndTerminal::HwndTerminal(HWND parentHwnd, uint32_t flags) noexcept :
     _desiredFont{ L"Consolas", 0, DEFAULT_FONT_WEIGHT, 14, CP_UTF8 },
     _actualFont{ L"Consolas", 0, DEFAULT_FONT_WEIGHT, { 0, 14 }, CP_UTF8, false },
     _uiaProvider{ nullptr },
     _currentDpi{ USER_DEFAULT_SCREEN_DPI },
     _pfnWriteCallback{ nullptr },
-    _multiClickTime{ 500 } // this will be overwritten by the windows system double-click time
+    _multiClickTime{ 500 }, // this will be overwritten by the windows system double-click time
+    _composed{ WI_IsFlagSet(flags, TERMINAL_CREATE_COMPOSED) }
 {
     auto hInstance = wil::GetModuleInstanceHandle();
 
     if (RegisterTermClass(hInstance))
     {
         // The WS_EX_NOREDIRECTIONBITMAP flag is used to disable the GDI redirection surface
-        // for reduced memory usage, because the window is fully rendered in DX.
+        // for reduced memory usage, because the window is fully rendered in DX. A composed
+        // terminal (TERMINAL_CREATE_COMPOSED) relies on it too: its child window has no pixels of
+        // its own, the visual on the top-level window covers it.
         CreateWindowExW(
             WS_EX_NOREDIRECTIONBITMAP,
             term_window_class,
@@ -287,7 +381,24 @@ HRESULT HwndTerminal::Initialize()
     _renderer = std::make_unique<::Microsoft::Console::Render::Renderer>(renderSettings, _terminal.get());
 
     auto engine = std::make_unique<::Microsoft::Console::Render::AtlasEngine>();
-    RETURN_IF_FAILED(engine->SetHwnd(_hwnd.get()));
+    if (_composed)
+    {
+        // No HWND: the engine renders into a composition surface and hands us its handle from the
+        // render thread whenever it (re)creates the swap chain; the window thread wraps it in the
+        // visual. The engine's XAML-scale compensation is for SwapChainPanel hosts, not for us.
+        // The composition device up front: it loads dcomp.dll, which the engine's composition
+        // path needs on its first frame, and a machine without DirectComposition fails here,
+        // at creation, rather than frame after frame in silence.
+        RETURN_HR_IF(E_NOTIMPL, !_GetCompositionDevice());
+        engine->SetUndoXamlScale(false);
+        engine->SetCallback([this](HANDLE handle) noexcept { _OnSwapChainChanged(handle); });
+        _ApplyBackgroundOpacity(renderSettings);
+        engine->EnableTransparentBackground(_backgroundOpacity < 1.0f);
+    }
+    else
+    {
+        RETURN_IF_FAILED(engine->SetHwnd(_hwnd.get()));
+    }
     _renderer->AddRenderEngine(engine.get());
 
     _UpdateFont(USER_DEFAULT_SCREEN_DPI);
@@ -323,6 +434,7 @@ try
     // Shut down the renderer (and therefore the thread) before we implode
     _renderer.reset();
     _renderEngine.reset();
+    _DetachComposition();
 
     // These two callbacks have a dangling reference to `this`; let's just clear them
     _terminal->SetWriteInputCallback(nullptr);
@@ -471,7 +583,15 @@ void _stdcall AvoidBuggyTSFConsoleFlags()
 
 HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void** terminal)
 {
-    auto publicTerminal = std::make_unique<HwndTerminal>(parentHwnd);
+    return CreateTerminalEx(parentHwnd, 0, hwnd, terminal);
+}
+
+HRESULT _stdcall CreateTerminalEx(HWND parentHwnd, uint32_t flags, _Out_ void** hwnd, _Out_ void** terminal)
+{
+    RETURN_HR_IF(E_INVALIDARG, WI_IsAnyFlagSet(flags, ~TERMINAL_CREATE_COMPOSED));
+
+    auto publicTerminal = std::make_unique<HwndTerminal>(parentHwnd, flags);
+    RETURN_HR_IF_NULL(E_FAIL, publicTerminal->GetHwnd());
 
     RETURN_IF_FAILED(publicTerminal->Initialize());
 
@@ -955,6 +1075,7 @@ void _stdcall TerminalSetTheme(void* terminal, TerminalTheme theme, LPCWSTR font
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_FOREGROUND, theme.DefaultForeground);
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_BACKGROUND, theme.DefaultBackground);
         renderSettings.SetColorTableEntry(TextColor::SELECTION_BACKGROUND, theme.DefaultSelectionBackground);
+        publicTerminal->_ApplyBackgroundOpacity(renderSettings);
 
         // Set the font colors
         for (size_t tableIndex = 0; tableIndex < 16; tableIndex++)
@@ -989,6 +1110,201 @@ void __stdcall TerminalSetFocused(void* terminal, bool focused)
     const auto publicTerminal = static_cast<HwndTerminal*>(terminal);
     publicTerminal->_setFocused(focused);
 }
+
+void _stdcall TerminalSetBackgroundOpacity(void* terminal, float opacity)
+try
+{
+    const auto publicTerminal = static_cast<HwndTerminal*>(terminal);
+    if (!publicTerminal || !publicTerminal->_composed || !publicTerminal->_terminal)
+    {
+        return;
+    }
+
+    opacity = std::clamp(opacity, 0.0f, 1.0f);
+    if (publicTerminal->_backgroundOpacity == opacity)
+    {
+        return;
+    }
+
+    const auto lock = publicTerminal->_terminal->LockForWriting();
+    publicTerminal->_backgroundOpacity = opacity;
+    publicTerminal->_ApplyBackgroundOpacity(publicTerminal->_terminal->GetRenderSettings());
+    if (publicTerminal->_renderEngine)
+    {
+        publicTerminal->_renderEngine->EnableTransparentBackground(opacity < 1.0f);
+    }
+    if (publicTerminal->_renderer)
+    {
+        publicTerminal->_renderer->TriggerRedrawAll();
+    }
+}
+CATCH_LOG()
+
+void _stdcall TerminalUpdateComposition(void* terminal)
+try
+{
+    const auto publicTerminal = static_cast<HwndTerminal*>(terminal);
+    if (publicTerminal && publicTerminal->_composed)
+    {
+        publicTerminal->_UpdateComposition();
+    }
+}
+CATCH_LOG()
+
+// The caller holds the terminal lock. Cells with the default background get the opacity as their
+// alpha (the renderer keeps the default background's alpha when transparency is enabled and forces
+// every other background opaque); a theme change resets the entry, so TerminalSetTheme calls this too.
+void HwndTerminal::_ApplyBackgroundOpacity(::Microsoft::Console::Render::RenderSettings& renderSettings) noexcept
+{
+    if (!_composed)
+    {
+        return;
+    }
+
+    const auto alpha = gsl::narrow_cast<uint8_t>(std::lround(_backgroundOpacity * 255.0f));
+    const til::color background{ renderSettings.GetColorTableEntry(TextColor::DEFAULT_BACKGROUND) };
+    renderSettings.SetColorTableEntry(TextColor::DEFAULT_BACKGROUND, background.with_alpha(alpha).abgr);
+}
+
+// Render thread: the engine made a new swap chain and this is its composition surface handle. The
+// engine owns that handle; a duplicate goes to the window thread, which owns the visual.
+void HwndTerminal::_OnSwapChainChanged(HANDLE handle) noexcept
+try
+{
+    wil::unique_handle duplicate;
+    if (handle)
+    {
+        THROW_IF_WIN32_BOOL_FALSE(DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), duplicate.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS));
+    }
+
+    {
+        const std::lock_guard lock{ _pendingSwapChainLock };
+        _pendingSwapChainHandle = std::move(duplicate);
+    }
+
+    const auto hwnd = _hwnd.get();
+    if (hwnd)
+    {
+        PostMessageW(hwnd, WM_HWNDTERMINAL_SWAPCHAIN_CHANGED, 0, 0);
+    }
+}
+CATCH_LOG()
+
+// Window thread: wrap the pending surface handle in the visual's content.
+void HwndTerminal::_ApplyPendingSwapChain() noexcept
+try
+{
+    wil::unique_handle handle;
+    {
+        const std::lock_guard lock{ _pendingSwapChainLock };
+        handle = std::move(_pendingSwapChainHandle);
+    }
+    if (!handle)
+    {
+        return;
+    }
+
+    const auto device = _GetCompositionDevice();
+    if (!device)
+    {
+        return;
+    }
+
+    if (!_compositionVisual)
+    {
+        THROW_IF_FAILED(device->CreateVisual(_compositionVisual.addressof()));
+    }
+
+    wil::com_ptr<IUnknown> surface;
+    THROW_IF_FAILED(device->CreateSurfaceFromHandle(handle.get(), surface.addressof()));
+    THROW_IF_FAILED(_compositionVisual->SetContent(surface.get()));
+    _swapChainHandle = std::move(handle);
+
+    _UpdateComposition();
+}
+CATCH_LOG()
+
+// Window thread: the visual sits on the child's current top-level window, at the child's position
+// in that window's client area, and only while the child is shown. Cheap enough to call on every
+// WM_WINDOWPOSCHANGED.
+void HwndTerminal::_UpdateComposition() noexcept
+try
+{
+    if (!_composed || !_compositionVisual)
+    {
+        return;
+    }
+
+    const auto hwnd = _hwnd.get();
+    const auto device = _GetCompositionDevice();
+    if (!hwnd || !device)
+    {
+        return;
+    }
+
+    const auto root = GetAncestor(hwnd, GA_ROOT);
+    const auto shown = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE) != 0 && root && root != hwnd;
+
+    if (!shown || (_compositionTarget && _compositionTarget->root != root))
+    {
+        if (_compositionVisualAttached && _compositionTarget)
+        {
+            LOG_IF_FAILED(_compositionTarget->rootVisual->RemoveVisual(_compositionVisual.get()));
+            _compositionVisualAttached = false;
+        }
+        if (_compositionTarget && _compositionTarget->root != root)
+        {
+            _compositionTarget.reset();
+        }
+    }
+
+    if (shown)
+    {
+        if (!_compositionTarget)
+        {
+            _compositionTarget = _GetCompositionTarget(root);
+            if (!_compositionTarget)
+            {
+                return;
+            }
+        }
+
+        RECT rect{};
+        GetWindowRect(hwnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, root, reinterpret_cast<POINT*>(&rect), 2);
+        THROW_IF_FAILED(_compositionVisual->SetOffsetX(static_cast<float>(rect.left)));
+        THROW_IF_FAILED(_compositionVisual->SetOffsetY(static_cast<float>(rect.top)));
+
+        if (!_compositionVisualAttached)
+        {
+            THROW_IF_FAILED(_compositionTarget->rootVisual->AddVisual(_compositionVisual.get(), TRUE, nullptr));
+            _compositionVisualAttached = true;
+        }
+    }
+
+    THROW_IF_FAILED(device->Commit());
+}
+CATCH_LOG()
+
+void HwndTerminal::_DetachComposition() noexcept
+try
+{
+    if (_compositionVisualAttached && _compositionTarget)
+    {
+        LOG_IF_FAILED(_compositionTarget->rootVisual->RemoveVisual(_compositionVisual.get()));
+        if (const auto device = _GetCompositionDevice())
+        {
+            LOG_IF_FAILED(device->Commit());
+        }
+    }
+    _compositionVisualAttached = false;
+    _compositionTarget.reset();
+    _compositionVisual.reset();
+    _swapChainHandle.reset();
+    const std::lock_guard lock{ _pendingSwapChainLock };
+    _pendingSwapChainHandle.reset();
+}
+CATCH_LOG()
 
 void HwndTerminal::_setFocused(bool focused) noexcept
 {

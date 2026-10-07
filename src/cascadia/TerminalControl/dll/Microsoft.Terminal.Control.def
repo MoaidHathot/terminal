@@ -6,6 +6,7 @@ EXPORTS
   ; Flat C ABI
   AvoidBuggyTSFConsoleFlags
   CreateTerminal
+  CreateTerminalEx
   DestroyTerminal
   TerminalCalculateResize
   TerminalDpiChanged
@@ -16,8 +17,10 @@ EXPORTS
   TerminalSendCharEvent
   TerminalSendKeyEvent
   TerminalSendOutput
+  TerminalSetBackgroundOpacity
   TerminalSetFocused
   TerminalSetTheme
   TerminalTriggerResize
   TerminalTriggerResizeWithDimension
+  TerminalUpdateComposition
   TerminalUserScroll

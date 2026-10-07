@@ -440,6 +440,14 @@ void AtlasEngine::SetDisablePartialInvalidation(bool enable) noexcept
     }
 }
 
+void AtlasEngine::SetUndoXamlScale(bool enable) noexcept
+{
+    if (_api.s->target->undoXamlScale != enable)
+    {
+        _api.s.write()->target.write()->undoXamlScale = enable;
+    }
+}
+
 void AtlasEngine::SetGraphicsAPI(GraphicsAPI graphicsAPI) noexcept
 {
     if (_api.s->target->graphicsAPI != graphicsAPI)
