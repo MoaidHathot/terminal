@@ -104,7 +104,7 @@ jobs:
           BRANCH: ${{ steps.rebase.outputs.branch }}
         run: |
           set -euo pipefail
-          existing="$(gh pr list --head "$BRANCH" --base overshell --state open --json number --jq '.[0].number')"
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=overshell&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" --jq '.[0].number')"
           body="$(printf '%s\n' \
             "Rebases the OverShell patches onto microsoft/terminal \`${TARGET}\` (${SHA})." \
             "" \
@@ -114,7 +114,7 @@ jobs:
             "" \
             "Opened by overshell-sync.")"
           if [[ -z "$existing" ]]; then
-            gh pr create --base overshell --head "$BRANCH" --title "Sync to upstream ${TARGET}" --body "$body"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" -f base=overshell -f head="$BRANCH" -f title="Sync to upstream ${TARGET}" -f body="$body" --jq '.html_url'
           else
             echo "PR #$existing already open for $BRANCH; updated by the push"
           fi
@@ -131,7 +131,7 @@ jobs:
         run: |
           set -euo pipefail
           title="Sync to upstream ${TARGET} needs a hand"
-          existing="$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')"
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)"
           body="$(printf '%s\n' \
             "Rebasing the OverShell patches onto \`${TARGET}\` (${SHA}) stopped on conflicts in:" \
             "" \
@@ -143,9 +143,12 @@ jobs:
           # The job summary always carries the report; the issue is the notification (a fork has
           # issues off by default - if they are off, the summary and the red run are what is left).
           { echo "## Sync to upstream ${TARGET} needs a hand"; echo; echo "$body"; } >> "$GITHUB_STEP_SUMMARY"
+          # REST rather than `gh issue`: the GITHUB_TOKEN of a forked repository is refused by the
+          # GraphQL createIssue mutation ("Resource not accessible by integration") even with
+          # issues: write; the REST endpoint is the same permission.
           if [[ -z "$existing" ]]; then
-            gh issue create --title "$title" --body "$body" || echo "::warning::could not open an issue (are issues enabled on this repository?); see the job summary"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues" -f title="$title" -f body="$body" --jq '.html_url' || echo "::warning::could not open an issue; the job summary carries the report"
           else
-            gh issue comment "$existing" --body "Still conflicting on $(date -u +%F): ${CONFLICTS//$'\n'/, }" || true
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${existing}/comments" -f body="Still conflicting on $(date -u +%F): ${CONFLICTS//$'\n'/, }" --jq '.html_url' || true
           fi
           exit 1
