@@ -2,7 +2,9 @@
 # ARM64, packs OverShell.Terminal.Wpf A.B.YYMMDD.N, attaches the package and the native symbols to a
 # GitHub release, and pushes the package to nuget.org through Trusted Publishing (NuGet/login:
 # GitHub's OIDC token exchanged for a one-hour key against a policy on nuget.org that names this
-# repository and this workflow file - no long-lived secret anywhere). A dispatched run is a dry run:
+# repository and this workflow file - no long-lived secret anywhere). With the AZURE_* secrets of an
+# Azure Artifact Signing account present (the same six OverShell's release.yml names), the pack job
+# signs the two binaries first; without them the package ships unsigned. A dispatched run is a dry run:
 # it builds and packs with the version given and leaves the package as a workflow artifact.
 # See build/overshell/README.md.
 name: overshell-release
@@ -109,12 +111,21 @@ jobs:
           if-no-files-found: ignore
 
   pack:
-    name: pack
+    name: pack (and sign, when configured)
     needs: [version, build]
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 30
+    # The "release" environment, so the signing account's federated credential has one stable
+    # OIDC subject (repo:MoaidHathot/terminal:environment:release). Signing is optional: with no
+    # AZURE_CLIENT_ID secret the two steps are skipped and the package ships the binaries unsigned
+    # (OverShell's own release then signs them with its certificate, if it has one).
+    environment: release
+    permissions:
+      contents: read
+      id-token: write   # the OIDC token for azure/login
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -125,8 +136,60 @@ jobs:
         with:
           pattern: symbols-*
           path: symbols/
+
+      - name: Signing catalogue
+        id: catalog
+        run: |
+          # Every binary the package will carry: the native DLL per platform, the managed one per
+          # target framework. Paths relative to the catalogue's own folder, one per line - the
+          # shape azure/artifact-signing-action's files-catalog input expects.
+          $root = (Resolve-Path artifacts).Path
+          $files = @(Get-ChildItem artifacts -Recurse -File -Include Microsoft.Terminal.Control.dll, Microsoft.Terminal.Wpf.dll)
+          if ($files.Count -eq 0) { throw 'no binaries to catalogue under artifacts/' }
+          $lines = $files | ForEach-Object { $_.FullName.Substring($root.Length + 1) }
+          [IO.File]::WriteAllText((Join-Path $root 'signing-catalog.txt'), (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+          "Catalogued $($files.Count) file(s):"; $lines | ForEach-Object { "  $_" }
+          "signing=$(if ($env:AZURE_CLIENT_ID) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+
+      - name: Azure login (OIDC)
+        if: steps.catalog.outputs.signing == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign the terminal control binaries (Azure Artifact Signing)
+        if: steps.catalog.outputs.signing == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-catalog: ${{ github.workspace }}\artifacts\signing-catalog.txt
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Windows Terminal control, built by OverShell's fork
+          description-url: https://github.com/MoaidHathot/terminal
+
+      - name: Verify the signatures
+        if: steps.catalog.outputs.signing == 'true'
+        run: |
+          # Signing was configured, so every catalogued file must now carry a valid signature;
+          # a package of half-signed binaries under a signed-looking release is worse than none.
+          $root = (Resolve-Path artifacts).Path
+          $bad = @()
+          foreach ($file in (Get-Content artifacts/signing-catalog.txt | Where-Object { $_ })) {
+            $s = Get-AuthenticodeSignature (Join-Path $root $file)
+            Write-Host "  $file : $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne 'Valid') { $bad += $file }
+          }
+          if ($bad.Count -gt 0) { throw "not validly signed: $($bad -join ', ')" }
+
       - name: Pack
         run: |
+          Remove-Item artifacts/signing-catalog.txt -ErrorAction SilentlyContinue
           ./build/overshell/Pack.ps1 -Version $env:VERSION -InputRoot artifacts -Platforms x64, arm64 -OutputDirectory out/packages
           Compress-Archive -Path symbols/* -DestinationPath "out/OverShell.Terminal.Wpf.$env:VERSION.native-symbols.zip"
           Get-FileHash out/packages/*.nupkg, out/*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } | Set-Content out/SHA256SUMS.txt
