@@ -142,8 +142,27 @@ With them present, the release's `pack` job signs `Microsoft.Terminal.Control.dl
 `Microsoft.Terminal.Wpf.dll` (both target frameworks) before packing, and refuses to pack unless
 every one of them verifies. Without them the package ships unsigned and says nothing; OverShell's
 release then signs the two binaries with its own certificate when *it* has one (its signing
-catalogue takes them only while they are unsigned). Not exercised yet: no signing account exists
-at the time of writing.
+catalogue takes them only while they are unsigned).
+
+Wiring an account up, once per repository that signs (one account and one certificate profile
+serve any number of repositories and projects; an app registration takes up to 20 federated
+credentials, one per repository + environment):
+
+1. Entra ID > App registrations > the app > *Certificates & secrets* > *Federated credentials* >
+   *GitHub Actions deploying Azure resources*: organization `MoaidHathot`, repository `terminal`,
+   entity type *Environment*, name `release`. That is issuer `https://token.actions.githubusercontent.com`,
+   subject `repo:MoaidHathot/terminal:environment:release`, audience `api://AzureADTokenExchange`.
+   No client secret is ever created.
+2. The signing account (or just the certificate profile) > *Access control (IAM)* > add the role
+   **Artifact Signing Certificate Profile Signer** to the app's service principal (search by the
+   app's name; the picker lists users only by default). Owner/Contributor do not grant signing.
+3. The six secrets above on the repository. `AZURE_SIGNING_ENDPOINT` is the account's region:
+   `https://<region>.codesigning.azure.net` (`eus`, `weu`, `neu`, `wus2`, ...); a region mismatch
+   is a 403.
+4. Push a `wpf-v*` tag; the `pack` job's *Verify the signatures* step prints every file's signer.
+
+The action signs PE files (Authenticode). The `.nupkg` itself is not author-signed: nuget.org would
+need the certificate registered on the account, and Artifact Signing rotates it every three days.
 
 ## Safety
 - Workflows run with a read-only `GITHUB_TOKEN`; the release job alone gets `contents: write` and
