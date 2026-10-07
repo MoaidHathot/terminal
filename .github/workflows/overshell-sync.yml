@@ -140,9 +140,12 @@ jobs:
             '```' \
             "" \
             "Resolve locally: git rebase --onto ${SHA} \$(sed -n 's/^commit=//p' build/overshell/UPSTREAM) overshell - then update build/overshell/UPSTREAM, push a sync/ branch and open the PR. Opened by overshell-sync.")"
+          # The job summary always carries the report; the issue is the notification (a fork has
+          # issues off by default - if they are off, the summary and the red run are what is left).
+          { echo "## Sync to upstream ${TARGET} needs a hand"; echo; echo "$body"; } >> "$GITHUB_STEP_SUMMARY"
           if [[ -z "$existing" ]]; then
-            gh issue create --title "$title" --body "$body"
+            gh issue create --title "$title" --body "$body" || echo "::warning::could not open an issue (are issues enabled on this repository?); see the job summary"
           else
-            gh issue comment "$existing" --body "Still conflicting on $(date -u +%F): ${CONFLICTS//$'\n'/, }"
+            gh issue comment "$existing" --body "Still conflicting on $(date -u +%F): ${CONFLICTS//$'\n'/, }" || true
           fi
           exit 1
