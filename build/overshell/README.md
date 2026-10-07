@@ -107,8 +107,28 @@ SDK, PowerShell 7:
 pinned to the newest installed toolset, the three restores, then
 `msbuild OpenConsole.slnx /t:Terminal\Control\TerminalControl;Terminal\wpf\WpfTerminalControl`.
 
-## Safety
+## Signing
 
+Upstream signs its CI output with Microsoft's certificate through internal tooling, which a fork
+cannot use, so the binaries this fork builds are unsigned unless an **Azure Artifact Signing**
+account (Public Trust certificate profile; an Entra app with a federated credential for GitHub
+OIDC, subject `repo:MoaidHathot/terminal:environment:release`) is wired in through six repository
+secrets - the same six OverShell's own `release.yml` names:
+
+| Secret | What |
+|---|---|
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | the Entra app (no client secret; OIDC) |
+| `AZURE_SIGNING_ENDPOINT` | e.g. `https://eus.codesigning.azure.net/` (the account's region) |
+| `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | the account and the certificate profile |
+
+With them present, the release's `pack` job signs `Microsoft.Terminal.Control.dll` (x64, arm64) and
+`Microsoft.Terminal.Wpf.dll` (both target frameworks) before packing, and refuses to pack unless
+every one of them verifies. Without them the package ships unsigned and says nothing; OverShell's
+release then signs the two binaries with its own certificate when *it* has one (its signing
+catalogue takes them only while they are unsigned). Not exercised yet: no signing account exists
+at the time of writing.
+
+## Safety
 - Workflows run with a read-only `GITHUB_TOKEN`; the release job alone gets `contents: write` and
   `id-token: write`, the sync job `contents`/`pull-requests`/`issues`/`actions: write`. The
   repository setting *Allow GitHub Actions to create and approve pull requests* is on for the
