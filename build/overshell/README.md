@@ -133,13 +133,13 @@ pinned to the newest installed toolset, the three restores, then
 Upstream signs its CI output with Microsoft's certificate through internal tooling, which a fork
 cannot use, so the binaries this fork builds are unsigned unless an **Azure Artifact Signing**
 account (Public Trust certificate profile; an Entra app with a federated credential for GitHub
-OIDC, subject `repo:MoaidHathot/terminal:environment:release`) is wired in through six repository
-secrets - the same six OverShell's own `release.yml` names:
+OIDC) is wired in through six secrets on the repository's `release` environment - the same six
+OverShell's own `release.yml` names:
 
 | Secret | What |
 |---|---|
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | the Entra app (no client secret; OIDC) |
-| `AZURE_SIGNING_ENDPOINT` | e.g. `https://eus.codesigning.azure.net/` (the account's region) |
+| `AZURE_SIGNING_ENDPOINT` | e.g. `https://wus3.codesigning.azure.net` (the account's region) |
 | `AZURE_SIGNING_ACCOUNT`, `AZURE_SIGNING_PROFILE` | the account and the certificate profile |
 
 With them present, the release's `pack` job signs `Microsoft.Terminal.Control.dll` (x64, arm64) and
@@ -148,22 +148,30 @@ every one of them verifies. Without them the package ships unsigned and says not
 release then signs the two binaries with its own certificate when *it* has one (its signing
 catalogue takes them only while they are unsigned).
 
-Wiring an account up, once per repository that signs (one account and one certificate profile
-serve any number of repositories and projects; an app registration takes up to 20 federated
-credentials, one per repository + environment):
+**As configured.** One account (`MoaidHathot`, West US 3) and its one Public Trust certificate
+profile serve every project of the owner's - the Basic tier allows exactly one profile of that
+type, so the profile is shared, and the certificate's subject is the owner's validated identity
+either way. Each project has its own Entra app registration, so one can be revoked without the
+others: *Shubbak release signing* for Shubbak, *OverShell release signing* for this fork and for
+OverShell (two federated credentials, one per repository), each app assigned **Artifact Signing
+Certificate Profile Signer** on the profile and nothing else. Wiring another repository up:
 
 1. Entra ID > App registrations > the app > *Certificates & secrets* > *Federated credentials* >
-   *GitHub Actions deploying Azure resources*: organization `MoaidHathot`, repository `terminal`,
-   entity type *Environment*, name `release`. That is issuer `https://token.actions.githubusercontent.com`,
-   subject `repo:MoaidHathot/terminal:environment:release`, audience `api://AzureADTokenExchange`.
-   No client secret is ever created.
+   *GitHub Actions deploying Azure resources*: organization `MoaidHathot`, repository `<repo>`,
+   entity type *Environment*, name `release`. Issuer `https://token.actions.githubusercontent.com`,
+   audience `api://AzureADTokenExchange`. The subject must be what GitHub puts in the token, and
+   since 2026 that carries the owner's and the repository's numeric ids:
+   `repo:MoaidHathot@8770486/<repo>@<repository id>:environment:release` (`gh api repos/MoaidHathot/<repo> --jq .id`;
+   `azure/login` prints the subject it received under *Federated token details* when it fails).
+   No client secret is ever created. An app takes up to 20 credentials.
 2. The signing account (or just the certificate profile) > *Access control (IAM)* > add the role
    **Artifact Signing Certificate Profile Signer** to the app's service principal (search by the
    app's name; the picker lists users only by default). Owner/Contributor do not grant signing.
-3. The six secrets above on the repository. `AZURE_SIGNING_ENDPOINT` is the account's region:
-   `https://<region>.codesigning.azure.net` (`eus`, `weu`, `neu`, `wus2`, ...); a region mismatch
-   is a 403.
-4. Push a `wpf-v*` tag; the `pack` job's *Verify the signatures* step prints every file's signer.
+3. The six secrets above on the repository's `release` environment. `AZURE_SIGNING_ENDPOINT` is the
+   account's region: `https://<region>.codesigning.azure.net` (`wus3`, `eus`, `weu`, ...); a region
+   mismatch is a 403.
+4. Rehearse with a dispatched run (nothing is published), then push a `wpf-v*` tag; the `pack`
+   job's *Verify the signatures* step prints every file's signer.
 
 The action signs PE files (Authenticode). The `.nupkg` itself is not author-signed: nuget.org would
 need the certificate registered on the account, and Artifact Signing rotates it every three days.

@@ -116,7 +116,8 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     # The "release" environment, so the signing account's federated credential has one stable
-    # OIDC subject (repo:MoaidHathot/terminal:environment:release). Signing is optional: with no
+    # OIDC subject (repo:MoaidHathot@<owner id>/terminal@<repo id>:environment:release - GitHub's
+    # token carries the numeric ids). Signing is optional: with no
     # AZURE_CLIENT_ID secret the two steps are skipped and the package ships the binaries unsigned
     # (OverShell's own release then signs them with its certificate, if it has one).
     environment: release
