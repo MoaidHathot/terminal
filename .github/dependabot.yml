@@ -1,7 +1,10 @@
-# Upstream's Dependabot configuration (weekly, grouped, 7-day cooldown) plus the OverShell fork's:
-# keep the pinned actions in the overshell-* workflows current on the overshell branch. Upstream's
-# own workflows (spelling, project board, winget) are theirs; their actions are ignored on our
-# branch so a sync does not collide with a Dependabot bump.
+# Upstream's Dependabot configuration plus the OverShell fork's.
+#
+# Upstream's entry is kept as it is, so a sync does not conflict on this file, but with its pull
+# requests switched off (open-pull-requests-limit: 0 - security updates only): on this branch it
+# would bump upstream's own workflows (spelling, project board, winget), which upstream bumps
+# itself, and that is a sync conflict each time. The fork's entry covers the overshell-* workflows,
+# grouped into one weekly pull request, ignoring upstream's actions for the same reason.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -13,15 +16,20 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: /
     target-branch: overshell
     schedule:
       interval: weekly
       day: monday
+    groups:
+      overshell-actions:
+        patterns: ["*"]
     commit-message:
       prefix: "overshell(actions)"
     labels: [overshell, dependencies]
     ignore:
       - dependency-name: check-spelling/check-spelling
       - dependency-name: actions/add-to-project
+      - dependency-name: vedantmgoyal9/winget-releaser
