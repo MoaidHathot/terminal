@@ -54,6 +54,10 @@ and a non-redirected child under a `topmost` target still hit-tests. A host must
 `WS_CLIPCHILDREN` off on that window: WPF cannot repaint under a child HWND, so anything it painted
 there before the child covered it would stay as a ghost under the translucent terminal.
 
+Sending the patches upstream, with the issue and pull request texts ready to paste, is
+[UPSTREAMING.md](UPSTREAMING.md); the branches `upstream/atlas-dcomp-load` and
+`upstream/wpf-composed-rendering` sit on upstream `main` with nothing of the fork's own in them.
+
 ## How a release happens
 
 1. CI is green on `overshell` (`overshell-ci`: build x64 and pack; ARM64 on request).
