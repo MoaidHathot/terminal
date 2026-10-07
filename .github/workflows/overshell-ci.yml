@@ -75,13 +75,13 @@ jobs:
           }
           Get-ChildItem out -Recurse -File | ForEach-Object { '{0,10:N0} KB  {1}' -f ($_.Length / 1KB), $_.FullName.Substring($PWD.Path.Length + 1) }
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-${{ matrix.platform }}
           path: out/
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: binlog-${{ matrix.platform }}
@@ -103,7 +103,7 @@ jobs:
         run: |
           $platforms = @(Get-ChildItem artifacts -Directory | ForEach-Object { $_.Name -replace '^build-', '' } | Where-Object { $_ -ne 'wpf' })
           ./build/overshell/Pack.ps1 -Version 0.0.1 -InputRoot artifacts -Platforms $platforms -OutputDirectory out/packages
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: package-dry-run
           path: out/packages/*.nupkg
