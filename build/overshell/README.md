@@ -33,7 +33,8 @@ a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork buil
 `9ae724a` (2026-03-02, the 1.25 line - the same commit the third-party `CI.Microsoft.Terminal.Wpf
 1.25.260303002` was built from; unchanged upstream bits, tagged on `rel/1.25.260302.1`), and
 `1.25.260302.2` the second, with patches 2 and 3. `1.26.260930.1` is the first build on upstream
-`v1.26.2734.0` (2026-09-30), the series rebased by the first sync.
+`v1.26.2734.0` (2026-09-30), the series rebased by the first sync; `1.26.260930.2` the same source,
+the first package whose binaries are signed (see *Signing*).
 
 ## The patch series
 
