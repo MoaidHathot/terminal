@@ -55,30 +55,41 @@ function Step([string] $text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
 # ---- 1. Visual Studio + MSBuild -----------------------------------------------------------------
 # The TerminalControl path is C++/WinRT built as a Windows Store (AppContainer) component
 # (OpenConsoleUniversalApp in src/cppwinrt.build.pre.props), so the Visual Studio that builds it needs
-# the UWP C++ tools for the tree's toolset on top of Desktop C++ - the repository's .vsconfig lists
-# both. Of several installed instances, take the newest one that has them; when none does, say which
-# component is missing and how to add it, rather than letting MSBuild fail two minutes in with
-# MSB8036/MSB8020 about a missing SDK or a missing 'Windows Store' toolset.
+# the Windows Store platform toolset for the tree's toolset version on top of Desktop C++ - which is
+# what MSB8020 ("build tools for 'v145' application Type Windows Store cannot be found") and MSB8036
+# complain about, two minutes into a build, when it is missing. Checked here by the file MSBuild
+# itself looks for, not by installer component ids: the GitHub runner image and a desktop install
+# carry the same toolset under different component names. Of several instances, the newest that can
+# build the tree wins; when none can, the message names the installer component that adds it.
 $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere - is Visual Studio installed?" }
-$required = @('Microsoft.VisualStudio.Component.VC.Tools.x86.x64', 'Microsoft.VisualStudio.ComponentGroup.UWP.VC')
 $sdkVersion = ([regex]::Match((Get-Content (Join-Path $repo 'src\common.build.pre.props') -Raw), '<WindowsTargetPlatformVersion[^>]*>([\d.]+)<')).Groups[1].Value
-if ($sdkVersion -match '^10\.0\.(\d+)\.0$') { $required += "Microsoft.VisualStudio.Component.Windows11SDK.$($Matches[1])" }
-$vsRoot = & $vswhere -latest -products * -requires @required -property installationPath
-if (-not $vsRoot) {
-    $closest = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -include packages -format json | ConvertFrom-Json | Select-Object -First 1
-    if (-not $closest) { throw 'No Visual Studio with the C++ x64 toolset was found (workload "Desktop development with C++").' }
-    $have = @($closest.packages | ForEach-Object { $_.id })
-    $missing = @($required | Where-Object { $have -notcontains $_ })
-    $setup = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe'
-    throw ("$($closest.displayName) at $($closest.installationPath) lacks: $($missing -join ', '). " +
-           "The tree wants SDK $sdkVersion and the UWP C++ tools (the Windows Store toolset its C++/WinRT projects are built with); add them with:`n" +
-           "  & '$setup' modify --installPath '$($closest.installationPath)' $(($missing | ForEach-Object { "--add $_" }) -join ' ') --passive --norestart")
+$sdkInclude = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Include\$sdkVersion"
+$instances = @(& $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json | Sort-Object { [Version] $_.installationVersion } -Descending)
+if ($instances.Count -eq 0) { throw 'No Visual Studio with the C++ x64 toolset was found (workload "Desktop development with C++").' }
+function StoreToolset([object] $instance) {
+    # v145 under VS 2026 (MSBuild\Microsoft\VC\v180), v143 under VS 2022 (v170): src/common.build.pre.props.
+    $major = ([Version] $instance.installationVersion).Major
+    $toolset = if ($major -ge 18) { 'v145' } else { 'v143' }
+    Join-Path $instance.installationPath "MSBuild\Microsoft\VC\v$($major)0\Application Type\Windows Store\10.0\Platforms\$Platform\PlatformToolsets\$toolset\Toolset.props"
 }
+$usable = $instances | Where-Object { Test-Path (StoreToolset $_) } | Select-Object -First 1
+if (-not $usable) {
+    $closest = $instances[0]
+    $setup = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe'
+    throw ("$($closest.displayName) at $($closest.installationPath) has no Windows Store platform toolset for $Platform " +
+           "(expected $(StoreToolset $closest)). The tree's C++/WinRT projects build as Windows Store components, which needs the " +
+           "'C++ Universal Windows Platform tools' component (Microsoft.VisualStudio.ComponentGroup.UWP.VC) on top of Desktop C++:`n" +
+           "  & '$setup' modify --installPath '$($closest.installationPath)' --add Microsoft.VisualStudio.ComponentGroup.UWP.VC --passive --norestart")
+}
+if (-not (Test-Path $sdkInclude)) {
+    throw "The tree wants the Windows SDK $sdkVersion (src/common.build.pre.props) and $sdkInclude is not there; install it with the Visual Studio installer (Microsoft.VisualStudio.Component.Windows11SDK.$(($sdkVersion -split '\.')[2])) or from the Windows SDK page."
+}
+$vsRoot = $usable.installationPath
 $msbuild = Join-Path $vsRoot 'MSBuild\Current\Bin\amd64\MSBuild.exe'
 if (-not (Test-Path $msbuild)) { $msbuild = Join-Path $vsRoot 'MSBuild\Current\Bin\MSBuild.exe' }
 if (-not (Test-Path $msbuild)) { throw "MSBuild not found under $vsRoot" }
-Step "Visual Studio: $vsRoot (SDK $sdkVersion, UWP C++ tools present)"
+Step "Visual Studio: $vsRoot ($($usable.displayName) $($usable.installationVersion); Windows Store toolset for $Platform present; SDK $sdkVersion)"
 Write-Host "MSBuild: $msbuild"
 & $msbuild -version | Select-Object -Last 1 | ForEach-Object { Write-Host "MSBuild version: $_" }
 
