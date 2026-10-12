@@ -53,14 +53,32 @@ if (-not $BinLog) { $BinLog = Join-Path $repo "msbuild-$Platform.binlog" }
 function Step([string] $text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
 
 # ---- 1. Visual Studio + MSBuild -----------------------------------------------------------------
+# The TerminalControl path is C++/WinRT built as a Windows Store (AppContainer) component
+# (OpenConsoleUniversalApp in src/cppwinrt.build.pre.props), so the Visual Studio that builds it needs
+# the UWP C++ tools for the tree's toolset on top of Desktop C++ - the repository's .vsconfig lists
+# both. Of several installed instances, take the newest one that has them; when none does, say which
+# component is missing and how to add it, rather than letting MSBuild fail two minutes in with
+# MSB8036/MSB8020 about a missing SDK or a missing 'Windows Store' toolset.
 $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere - is Visual Studio installed?" }
-$vsRoot = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-if (-not $vsRoot) { throw 'No Visual Studio with the C++ x64 toolset was found.' }
+$required = @('Microsoft.VisualStudio.Component.VC.Tools.x86.x64', 'Microsoft.VisualStudio.ComponentGroup.UWP.VC')
+$sdkVersion = ([regex]::Match((Get-Content (Join-Path $repo 'src\common.build.pre.props') -Raw), '<WindowsTargetPlatformVersion[^>]*>([\d.]+)<')).Groups[1].Value
+if ($sdkVersion -match '^10\.0\.(\d+)\.0$') { $required += "Microsoft.VisualStudio.Component.Windows11SDK.$($Matches[1])" }
+$vsRoot = & $vswhere -latest -products * -requires @required -property installationPath
+if (-not $vsRoot) {
+    $closest = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -include packages -format json | ConvertFrom-Json | Select-Object -First 1
+    if (-not $closest) { throw 'No Visual Studio with the C++ x64 toolset was found (workload "Desktop development with C++").' }
+    $have = @($closest.packages | ForEach-Object { $_.id })
+    $missing = @($required | Where-Object { $have -notcontains $_ })
+    $setup = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe'
+    throw ("$($closest.displayName) at $($closest.installationPath) lacks: $($missing -join ', '). " +
+           "The tree wants SDK $sdkVersion and the UWP C++ tools (the Windows Store toolset its C++/WinRT projects are built with); add them with:`n" +
+           "  & '$setup' modify --installPath '$($closest.installationPath)' $(($missing | ForEach-Object { "--add $_" }) -join ' ') --passive --norestart")
+}
 $msbuild = Join-Path $vsRoot 'MSBuild\Current\Bin\amd64\MSBuild.exe'
 if (-not (Test-Path $msbuild)) { $msbuild = Join-Path $vsRoot 'MSBuild\Current\Bin\MSBuild.exe' }
 if (-not (Test-Path $msbuild)) { throw "MSBuild not found under $vsRoot" }
-Step "Visual Studio: $vsRoot"
+Step "Visual Studio: $vsRoot (SDK $sdkVersion, UWP C++ tools present)"
 Write-Host "MSBuild: $msbuild"
 & $msbuild -version | Select-Object -Last 1 | ForEach-Object { Write-Host "MSBuild version: $_" }
 
@@ -95,6 +113,16 @@ $env:VCToolsVersion = $vcToolsVersion
 Step "VCToolsVersion: $vcToolsVersion"
 
 # ---- 4. restore (steps-restore-nuget.yml) --------------------------------------------------------
+# Every restore reads the repository's NuGet.Config and nothing else: a developer box whose global
+# NuGet configuration maps package patterns to its own feeds would otherwise map StyleCop.Analyzers
+# (WpfTerminalControl.csproj) to a source this tree does not list, and the solution restore fails
+# with NU1100. nuget.exe gets it through -ConfigFile; MSBuild's restore through RestoreConfigFile,
+# which makes that file the whole configuration (the same as `dotnet restore --configfile`).
+$nugetConfig = Join-Path $repo 'NuGet.Config'
+$packages = Join-Path $repo 'packages'
+if ($SkipRestore -and -not (Test-Path (Join-Path $packages 'Microsoft.Windows.ImplementationLibrary.*'))) {
+    throw "-SkipRestore, but $packages has no restored packages yet; run once without it."
+}
 if (-not $SkipRestore) {
     $nuget = Get-Command nuget.exe -ErrorAction SilentlyContinue
     if (-not $nuget) {
@@ -108,13 +136,12 @@ if (-not $SkipRestore) {
         $nuget = Get-Command $nugetExe
     }
     Step "NuGet: $($nuget.Source)"
-    $packages = Join-Path $repo 'packages'
-    & $nuget.Source restore build/packages.config -ConfigFile NuGet.Config -PackagesDirectory $packages -NonInteractive
+    & $nuget.Source restore build/packages.config -ConfigFile $nugetConfig -PackagesDirectory $packages -NonInteractive
     if ($LASTEXITCODE -ne 0) { throw "nuget restore build/packages.config failed ($LASTEXITCODE)" }
-    & $nuget.Source restore dep/nuget/packages.config -ConfigFile NuGet.Config -PackagesDirectory $packages -NonInteractive
+    & $nuget.Source restore dep/nuget/packages.config -ConfigFile $nugetConfig -PackagesDirectory $packages -NonInteractive
     if ($LASTEXITCODE -ne 0) { throw "nuget restore dep/nuget/packages.config failed ($LASTEXITCODE)" }
     Step "msbuild /t:Restore ($Platform $Configuration)"
-    & $msbuild OpenConsole.slnx /t:Restore /p:Configuration=$Configuration /p:Platform=$Platform /m /nologo /v:m /nr:false
+    & $msbuild OpenConsole.slnx /t:Restore /p:Configuration=$Configuration /p:Platform=$Platform "/p:RestoreConfigFile=$nugetConfig" /m /nologo /v:m /nr:false
     if ($LASTEXITCODE -ne 0) { throw "solution restore failed ($LASTEXITCODE)" }
 }
 

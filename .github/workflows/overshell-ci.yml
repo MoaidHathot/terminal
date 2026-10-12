@@ -1,13 +1,44 @@
 # OverShell's build of the Windows Terminal WPF control: does the tree still compile and pack?
 # Runs for pull requests and pushes on the fork's branches; never publishes anything.
 # See build/overshell/README.md.
+#
+# A native build is six to seven minutes of a Windows runner, so it runs only when something that
+# feeds it changed (the path filters below: no build for a README, UPSTREAMING.md or a change to
+# the release/sync workflows), only once per commit (a push whose commit a pull request already
+# built green is skipped - the sync lands its PR with a fast-forward, so the push carries the very
+# commit the PR built), and with vcpkg's binary cache carried between runs (the five ports it
+# builds from source are about eighty seconds of every build).
 name: overshell-ci
 
 on:
   pull_request:
     branches: [overshell]
+    paths:
+      - 'src/**'
+      - 'dep/**'
+      - 'build/**'
+      - '!build/overshell/*.md'
+      - 'OpenConsole.slnx'
+      - 'NuGet.Config'
+      - 'vcpkg.json'
+      - 'vcpkg-configuration.json'
+      - '*.props'
+      - '*.targets'
+      - '.github/workflows/overshell-ci.yml'
   push:
     branches: [overshell, 'sync/**', 'overshell/**']
+    paths:
+      - 'src/**'
+      - 'dep/**'
+      - 'build/**'
+      - '!build/overshell/*.md'
+      - 'OpenConsole.slnx'
+      - 'NuGet.Config'
+      - 'vcpkg.json'
+      - 'vcpkg-configuration.json'
+      - '*.props'
+      - '*.targets'
+      - '.github/workflows/overshell-ci.yml'
   workflow_dispatch:
     inputs:
       arm64:
@@ -16,9 +47,11 @@ on:
         default: false
 
 # Fork pull requests run with this read-only token and no secrets (pull_request, not
-# pull_request_target); nothing here needs more.
+# pull_request_target); nothing here needs more. The plan job reads this workflow's own runs
+# through the API, which the read-only token allows on a public repository.
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: overshell-ci-${{ github.ref }}
@@ -31,14 +64,21 @@ jobs:
     timeout-minutes: 5
     outputs:
       runner: ${{ steps.p.outputs.runner }}
+      build: ${{ steps.p.outputs.build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: p
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         # The runner comes from the tree: a 1.25 base wants VS 2022 (v143) and the 10.0.22621 SDK,
         # which only windows-2022 carries; a 1.26 base wants VS 2026 (windows-latest). The sync
         # writes it into UPSTREAM with the new base, so every branch builds on the image it needs.
         # vars.OVERSHELL_RUNNER still overrides, for a one-off.
+        #
+        # A push is skipped when this commit was already built green - by this workflow on a pull
+        # request, typically, or by overshell-release when its tag was pushed first: the bits would
+        # be identical. Dispatches and pull requests always build.
         run: |
           runner="${{ vars.OVERSHELL_RUNNER }}"
           [[ -n "$runner" ]] || runner="$(sed -n 's/^runner=//p' build/overshell/UPSTREAM)"
@@ -46,9 +86,21 @@ jobs:
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
           echo "runner: $runner"
 
+          build=true
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            earlier="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&status=success&per_page=20" \
+              --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }} and (.path == ".github/workflows/overshell-ci.yml" or .path == ".github/workflows/overshell-release.yml"))] | length' 2>/dev/null || echo 0)"
+            if [[ "${earlier:-0}" -gt 0 ]]; then
+              build=false
+              echo "commit ${{ github.sha }} already built green ($earlier earlier run(s) of overshell-ci/overshell-release); skipping the build" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
   build:
     name: build ${{ matrix.platform }}
     needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ${{ needs.plan.outputs.runner }}
     timeout-minutes: 180
     strategy:
@@ -57,6 +109,19 @@ jobs:
         platform: ${{ fromJSON(inputs.arm64 && '["x64", "ARM64"]' || '["x64"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # vcpkg's binary cache: the archives of the ports it built (fmt, cmark, jsoncpp, cli11, ms-gsl),
+      # keyed on the manifest, the overlays and the runner image (the package ABI hashes the
+      # compiler, so a toolset update on the image means a rebuild anyway - a new key, not a stale
+      # hit). A miss on the exact key still restores the newest cache for the platform and vcpkg
+      # rebuilds only what no longer matches.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-${{ matrix.platform }}-${{ env.ImageVersion }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'dep/vcpkg-overlay-ports/**', 'dep/vcpkg-overlay-triplets/**') }}
+          restore-keys: |
+            vcpkg-${{ matrix.platform }}-${{ env.ImageVersion }}-
+            vcpkg-${{ matrix.platform }}-
 
       - name: Build (native${{ matrix.platform == 'x64' && ' + WPF' || '' }})
         run: ./build/overshell/Build.ps1 -Platform ${{ matrix.platform }} ${{ matrix.platform == 'x64' && '-Wpf' || '' }}

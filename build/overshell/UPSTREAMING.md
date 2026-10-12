@@ -239,6 +239,25 @@ the child covered it stays as a ghost under the translucent terminal).
 
 ---
 
+## Issue 3 (bug, small) - the packed premultiplication
+
+**Title:** `AtlasEngine: u32ColorPremultiply leaks blue into red for any alpha other than 0 and 255`
+
+**Body:**
+
+`u32ColorPremultiply` in `src/renderer/atlas/Backend.h` scales the packed red/blue pair with one
+integer division: `rb = (rb * m / 0xff) & 0x00ff00ff`. Dividing the packed 32-bit value by 255
+is not a per-channel division: the remainder of blue's division lands in the low 16 bits and is
+added to red. For `#0C0C0C` at alpha 0xD9 the premultiplied colour is `#400A0A` instead of
+`#0A0A0A` - 54 units of red that are not in the input.
+
+Windows Terminal itself never meets it: the default background's alpha is 0 (`til::color` to
+`COLORREF` drops alpha, and the XAML brush behind the swap chain provides the tint) or 255, and
+both are exact. A host that gives the default background a fractional alpha (the composed mode in
+#<issue 2>, or anyone calling `SetColorTableEntry` with a 32-bit value) gets a red cast that
+grows with alpha. The fix scales each channel on its own; `static_assert`s for alpha 0, 0x80,
+0xD9, 0xFF and a blue-only input pin it down. Branch `upstream/atlas-premultiply` on
+`MoaidHathot/terminal` has the one-function change.
 ## After either merges
 
 - Pull request 1 merged: the fork's series keeps its own copy of the hunk until the next sync

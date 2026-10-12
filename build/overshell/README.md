@@ -34,7 +34,8 @@ a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork buil
 1.25.260303002` was built from; unchanged upstream bits, tagged on `rel/1.25.260302.1`), and
 `1.25.260302.2` the second, with patches 2 and 3. `1.26.260930.1` is the first build on upstream
 `v1.26.2734.0` (2026-09-30), the series rebased by the first sync; `1.26.260930.2` the same source,
-the first package whose binaries are signed (see *Signing*).
+the first package whose binaries are signed (see *Signing*); `1.26.260930.3` adds patch 4 (the
+premultiplication fix - a translucent body is the theme's colour, not a red one).
 
 ## The patch series
 
@@ -45,6 +46,7 @@ Each commit on top of upstream, oldest first. A sync rebases exactly these.
 | 1 | **Build + publish infrastructure**: `build/overshell/` (this README, `Build.ps1`, `Pack.ps1`, the nuspec, `UPSTREAM`), `.github/workflows/overshell-{ci,release,sync}.yml`, `.github/dependabot.yml`, `CODEOWNERS` | none |
 | 2 | **Composed rendering mode** (`TERMINAL_CREATE_COMPOSED`, `CreateTerminalEx`, `TerminalSetBackgroundOpacity`, `TerminalUpdateComposition`; `TerminalControl.UseComposition` / `BackgroundOpacity`): the terminal renders into a composition surface that the library wraps in a DirectComposition visual on the host's top-level window, over an input-only child HWND (`WS_EX_NOREDIRECTIONBITMAP`, which upstream itself adopted in 1.26), so the swap chain keeps its alpha and the default background can be translucent over the window's backdrop. One composition device per process, one target per top-level window; the visual follows the child's position, size, visibility and re-parenting. Existing callers see no change. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def`, `src/cascadia/WpfTerminalControl/{NativeMethods,TerminalContainer,TerminalControl.xaml}.cs`, and in the engine: `TargetSettings.undoXamlScale` + `AtlasEngine::SetUndoXamlScale` (the SwapChainPanel scale compensation gets an off switch: `common.h`, `AtlasEngine.{h,api.cpp,r.cpp}`) |
 | 3 | **dcomp.dll for the composition path**: `AtlasEngine::_createSwapChain` loads `dcomp.dll` when no XAML host has (under WPF or plain Win32 `GetModuleHandle` returned null and the first frame threw, silently). A one-line fix worth sending upstream. | `src/renderer/atlas/AtlasEngine.r.cpp` |
+| 4 | **Per-channel premultiplication**: `u32ColorPremultiply` divided the packed red/blue pair by 255 as one integer, so blue's remainder spilled into red at every alpha but 0 and 255 - `#0C0C0C` at 0.85 came out `#400A0A` premultiplied, a visibly red body. Upstream never meets it (its default background carries alpha 0 or 255: `til::color` to `COLORREF` drops alpha); the composed mode's `TerminalSetBackgroundOpacity` is the first caller with an alpha in between. Each channel is now scaled on its own; `static_assert`s pin the five cases. Worth sending upstream as a correctness fix. | `src/renderer/atlas/Backend.h` |
 
 Why a child HWND stays: it keeps focus, keyboard, mouse (hit-testing is rect-based, so a window with
 no pixels still gets the mouse), text services (IME) and UI Automation exactly as upstream has them;
@@ -114,15 +116,31 @@ Two things to expect from upstream over time:
 
 ## Building locally
 
-Visual Studio 2022 with *Desktop development with C++*, *Universal Windows Platform development*
-and *C++ (v143) Universal Windows Platform tools* (the repository's `.vsconfig`), the 10.0.22621
-SDK, PowerShell 7:
+What the tree's base needs (`UPSTREAM`, `runner=`): for a 1.26 base, Visual Studio 2026 with
+*Desktop development with C++* **and the C++ (v145) Universal Windows Platform tools**
+(`Microsoft.VisualStudio.ComponentGroup.UWP.VC`) plus the 10.0.26100 SDK; for a 1.25 base the
+same with Visual Studio 2022 (v143) and the 10.0.22621 SDK; PowerShell 7. The UWP C++ tools are
+the part a "Desktop C++" install lacks: every project on the `TerminalControl` path is C++/WinRT
+built as a Windows Store (AppContainer) component (`OpenConsoleUniversalApp` in
+`src/cppwinrt.build.pre.props`), and without that component MSBuild stops with MSB8036 (no SDK
+for the Windows Store application type) or MSB8020 (no `v145` Windows Store toolset) - the
+repository's `.vsconfig` lists it, and opening `OpenConsole.slnx` in Visual Studio offers to
+install it. `Build.ps1` checks before building and prints the installer command when something
+is missing:
+
+```powershell
+& 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe' modify --installPath 'C:\Program Files\Microsoft Visual Studio\18\Enterprise' --add Microsoft.VisualStudio.ComponentGroup.UWP.VC --passive --norestart
+```
 
 ```powershell
 ./build/overshell/Build.ps1 -Platform x64 -Wpf       # bin\x64\Release\Microsoft.Terminal.Control\, bin\...\WpfTerminalControl\
 ./build/overshell/Build.ps1 -Platform ARM64
 ./build/overshell/Pack.ps1 -Version 0.0.1-local       # artifacts\packages\OverShell.Terminal.Wpf.0.0.1-local.nupkg
 ```
+
+Every restore reads the repository's `NuGet.Config` and nothing else (`-ConfigFile` for
+`nuget.exe`, `RestoreConfigFile` for MSBuild), so a machine whose global NuGet configuration maps
+packages to feeds of its own does not break the WPF project's restore.
 
 `Build.ps1` is a port of the `buildWPF` path of upstream's Azure Pipelines job
 (`build/pipelines/templates-v2/job-build-project.yml`): vcpkg from Visual Studio, `VCToolsVersion`
