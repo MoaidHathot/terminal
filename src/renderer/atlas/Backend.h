@@ -67,16 +67,21 @@ namespace Microsoft::Console::Render::Atlas
 
     constexpr u32 u32ColorPremultiply(u32 rgba)
     {
-        auto rb = rgba & 0x00ff00ff;
-        auto g = rgba & 0x0000ff00;
-        const auto a = rgba & 0xff000000;
+        // Divide each channel separately: dividing packed red/blue by 255 leaks
+        // the blue remainder into red at partial opacity.
+        const auto a = rgba >> 24;
+        const auto r = ((rgba >> 0) & 0xff) * a / 255;
+        const auto g = ((rgba >> 8) & 0xff) * a / 255;
+        const auto b = ((rgba >> 16) & 0xff) * a / 255;
 
-        const auto m = rgba >> 24;
-        rb = (rb * m / 0xff) & 0x00ff00ff;
-        g = (g * m / 0xff) & 0x0000ff00;
-
-        return rb | g | a;
+        return (a << 24) | (b << 16) | (g << 8) | r;
     }
+
+    static_assert(u32ColorPremultiply(0x000c0c0c) == 0x00000000);
+    static_assert(u32ColorPremultiply(0x800c0c0c) == 0x80060606);
+    static_assert(u32ColorPremultiply(0xd90c0c0c) == 0xd90a0a0a);
+    static_assert(u32ColorPremultiply(0xff0c0c0c) == 0xff0c0c0c);
+    static_assert(u32ColorPremultiply(0x800c0000) == 0x80060000);
 
     // MSVC STL (version 22000) implements std::clamp<T>(T, T, T) in terms of the generic
     // std::clamp<T, Predicate>(T, T, T, Predicate) with std::less{} as the argument,
