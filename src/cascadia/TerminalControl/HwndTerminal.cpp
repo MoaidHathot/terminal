@@ -49,6 +49,74 @@ struct HwndTerminal::CompositionTarget
 static wil::com_ptr<IDCompositionDesktopDevice> s_compositionDevice;
 static std::unordered_map<HWND, std::weak_ptr<HwndTerminal::CompositionTarget>> s_compositionTargets;
 
+struct CompositionPreview
+{
+    HwndTerminal* source = nullptr;
+    DWORD thread = 0;
+    std::shared_ptr<HwndTerminal::CompositionTarget> target;
+    wil::com_ptr<IDCompositionVisual2> root;
+    wil::com_ptr<IDCompositionVisual2> image;
+    wil::com_ptr<IDCompositionRectangleClip> clip;
+    RECT destination{};
+    RECT visible{};
+    float radius = 0;
+    bool attached = false;
+};
+
+// Tokens, rather than exposed pointers, make a late managed Dispose safe after source
+// teardown. Like the existing composition target map, this registry is UI-thread owned.
+static std::unordered_map<uint64_t, CompositionPreview> s_previews;
+static uint64_t s_nextPreview = 0;
+static std::atomic<DWORD> s_previewThread{ 0 };
+
+static HwndTerminal* _GetPreviewSource(HWND hwnd) noexcept
+{
+    DWORD process = 0;
+    const auto thread = GetWindowThreadProcessId(hwnd, &process);
+    wchar_t name[64]{};
+    if (thread != GetCurrentThreadId() || process != GetCurrentProcessId() ||
+        !GetClassNameW(hwnd, name, ARRAYSIZE(name)) || wcscmp(name, term_window_class) != 0)
+    {
+        return nullptr;
+    }
+    return reinterpret_cast<HwndTerminal*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+static HRESULT _UpdatePreview(CompositionPreview& preview) noexcept
+try
+{
+    const auto source = preview.source->GetPreviewSize();
+    const auto width = static_cast<float>(preview.destination.right - preview.destination.left);
+    const auto height = static_cast<float>(preview.destination.bottom - preview.destination.top);
+    RETURN_HR_IF(E_PENDING, source.width <= 0 || source.height <= 0 || width <= 0 || height <= 0);
+    const auto scale = std::min(width / source.width, height / source.height);
+    const D2D1_MATRIX_3X2_F transform{ scale, 0, 0, scale, 0, 0 };
+    RETURN_IF_FAILED(preview.image->SetTransform(transform));
+    RETURN_IF_FAILED(preview.image->SetOffsetX((width - scale * source.width) / 2));
+    RETURN_IF_FAILED(preview.image->SetOffsetY((height - scale * source.height) / 2));
+    RETURN_IF_FAILED(preview.root->SetOffsetX(static_cast<float>(preview.destination.left)));
+    RETURN_IF_FAILED(preview.root->SetOffsetY(static_cast<float>(preview.destination.top)));
+    RETURN_IF_FAILED(preview.clip->SetLeft(static_cast<float>(preview.visible.left - preview.destination.left)));
+    RETURN_IF_FAILED(preview.clip->SetTop(static_cast<float>(preview.visible.top - preview.destination.top)));
+    RETURN_IF_FAILED(preview.clip->SetRight(static_cast<float>(preview.visible.right - preview.destination.left)));
+    RETURN_IF_FAILED(preview.clip->SetBottom(static_cast<float>(preview.visible.bottom - preview.destination.top)));
+    RETURN_IF_FAILED(preview.clip->SetTopLeftRadiusX(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetTopLeftRadiusY(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetTopRightRadiusX(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetTopRightRadiusY(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetBottomLeftRadiusX(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetBottomLeftRadiusY(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetBottomRightRadiusX(preview.radius));
+    RETURN_IF_FAILED(preview.clip->SetBottomRightRadiusY(preview.radius));
+    if (!preview.attached)
+    {
+        RETURN_IF_FAILED(preview.target->rootVisual->AddVisual(preview.root.get(), TRUE, nullptr));
+        preview.attached = true;
+    }
+    return S_OK;
+}
+CATCH_RETURN()
+
 static IDCompositionDesktopDevice* _GetCompositionDevice() noexcept
 try
 {
@@ -77,6 +145,9 @@ catch (...)
 static std::shared_ptr<HwndTerminal::CompositionTarget> _GetCompositionTarget(HWND root) noexcept
 try
 {
+    // Hover previews create short-lived top-level windows. Keep their weak cache
+    // entries bounded as well as releasing the actual composition targets.
+    std::erase_if(s_compositionTargets, [](const auto& entry) { return entry.second.expired(); });
     if (const auto it = s_compositionTargets.find(root); it != s_compositionTargets.end())
     {
         if (auto existing = it->second.lock())
@@ -560,6 +631,7 @@ HRESULT HwndTerminal::Refresh(const til::size windowSize, _Out_ til::size* dimen
     _terminal->ClearSelection();
 
     RETURN_IF_FAILED(_renderEngine->SetWindowSize(windowSize));
+    _previewSize = windowSize;
 
     // Invalidate everything
     _renderer->TriggerRedrawAll();
@@ -582,6 +654,8 @@ HRESULT HwndTerminal::Refresh(const til::size windowSize, _Out_ til::size* dimen
     RETURN_IF_FAILED(_terminal->UserResize(size));
     dimensions->width = size.width;
     dimensions->height = size.height;
+
+    if (!s_previews.empty()) _UpdateComposition();
 
     return S_OK;
 }
@@ -1171,6 +1245,150 @@ try
 }
 CATCH_LOG()
 
+HRESULT _stdcall TerminalCreatePreview(HWND source, HWND destination, uint64_t* token)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG, !token);
+    *token = 0;
+    const auto terminal = _GetPreviewSource(source);
+    DWORD process = 0;
+    const auto thread = GetWindowThreadProcessId(destination, &process);
+    RETURN_HR_IF(E_INVALIDARG, !terminal || thread != GetCurrentThreadId() || process != GetCurrentProcessId() || GetAncestor(destination, GA_ROOT) != destination);
+    DWORD unset = 0;
+    s_previewThread.compare_exchange_strong(unset, thread);
+    RETURN_HR_IF(RPC_E_WRONG_THREAD, s_previewThread.load() != thread);
+    RETURN_HR_IF(E_NOTIMPL, !terminal->_composed);
+    RETURN_HR_IF(E_PENDING, !terminal->_swapChainHandle);
+    const auto device = _GetCompositionDevice();
+    RETURN_HR_IF(E_NOTIMPL, !device);
+    CompositionPreview preview;
+    preview.source = terminal;
+    preview.thread = thread;
+    preview.target = _GetCompositionTarget(destination);
+    RETURN_HR_IF(E_FAIL, !preview.target);
+    RETURN_IF_FAILED(device->CreateVisual(preview.root.addressof()));
+    RETURN_IF_FAILED(device->CreateVisual(preview.image.addressof()));
+    RETURN_IF_FAILED(device->CreateRectangleClip(preview.clip.addressof()));
+    RETURN_IF_FAILED(preview.root->SetClip(preview.clip.get()));
+    RETURN_IF_FAILED(preview.root->AddVisual(preview.image.get(), TRUE, nullptr));
+    wil::com_ptr<IUnknown> surface;
+    RETURN_IF_FAILED(device->CreateSurfaceFromHandle(terminal->_swapChainHandle.get(), surface.addressof()));
+    RETURN_IF_FAILED(preview.image->SetContent(surface.get()));
+    const auto id = ++s_nextPreview;
+    RETURN_HR_IF(E_OUTOFMEMORY, id == 0);
+    s_previews.emplace(id, std::move(preview));
+    *token = id;
+    return S_OK;
+}
+CATCH_RETURN()
+
+HRESULT _stdcall TerminalUpdatePreview(uint64_t token, const RECT* destination, const RECT* clip, float radius)
+try
+{
+    RETURN_HR_IF(RPC_E_WRONG_THREAD, s_previewThread.load() != GetCurrentThreadId());
+    const auto found = s_previews.find(token);
+    RETURN_HR_IF(E_HANDLE, found == s_previews.end());
+    auto& preview = found->second;
+    RETURN_HR_IF(RPC_E_WRONG_THREAD, preview.thread != GetCurrentThreadId());
+    RETURN_HR_IF(E_INVALIDARG, !destination || !clip || destination->right <= destination->left || destination->bottom <= destination->top || !std::isfinite(radius) || radius < 0);
+    RETURN_HR_IF(E_HANDLE, !IsWindow(preview.target->root));
+    RECT visible{};
+    if (!IntersectRect(&visible, destination, clip))
+    {
+        if (preview.attached)
+        {
+            RETURN_IF_FAILED(preview.target->rootVisual->RemoveVisual(preview.root.get()));
+            preview.attached = false;
+        }
+    }
+    else
+    {
+        preview.destination = *destination;
+        preview.visible = visible;
+        preview.radius = radius;
+        RETURN_IF_FAILED(_UpdatePreview(preview));
+    }
+    return _GetCompositionDevice()->Commit();
+}
+CATCH_RETURN()
+
+HRESULT _stdcall TerminalDestroyPreview(uint64_t token)
+try
+{
+    RETURN_HR_IF(RPC_E_WRONG_THREAD, s_previewThread.load() != GetCurrentThreadId());
+    const auto found = s_previews.find(token);
+    if (found == s_previews.end()) return S_FALSE;
+    RETURN_HR_IF(RPC_E_WRONG_THREAD, found->second.thread != GetCurrentThreadId());
+    if (found->second.attached) LOG_IF_FAILED(found->second.target->rootVisual->RemoveVisual(found->second.root.get()));
+    s_previews.erase(found);
+    return _GetCompositionDevice()->Commit();
+}
+CATCH_RETURN()
+
+HRESULT _stdcall TerminalGetPreviewSnapshot(HWND source, void** snapshot)
+try
+{
+    RETURN_HR_IF(E_INVALIDARG, !snapshot);
+    *snapshot = nullptr;
+    const auto terminal = _GetPreviewSource(source);
+    RETURN_HR_IF(E_INVALIDARG, !terminal);
+    auto data = terminal->GetRenderData();
+    RETURN_HR_IF(E_PENDING, !data);
+    data->LockConsole();
+    const auto unlock = wil::scope_exit([&]() noexcept { data->UnlockConsole(); });
+    const auto viewport = data->GetViewport();
+    const auto columns = static_cast<uint32_t>(viewport.Width());
+    const auto rows = static_cast<uint32_t>(viewport.Height());
+    RETURN_HR_IF(E_BOUNDS, columns == 0 || rows == 0 || static_cast<uint64_t>(columns) * rows > 262144);
+    struct Run { uint32_t x, y, cells, foreground, background, flags, offset, length; };
+    static_assert(sizeof(Run) == 32);
+    std::vector<Run> runs;
+    std::wstring text;
+    auto& buffer = data->GetTextBuffer();
+    for (auto cell = buffer.GetCellDataAt(viewport.Origin(), viewport); cell; ++cell)
+    {
+        if (cell->DbcsAttr() == DbcsAttribute::Trailing) continue;
+        const auto position = cell.Pos();
+        const auto x = static_cast<uint32_t>(position.x - viewport.Left());
+        const auto y = static_cast<uint32_t>(position.y - viewport.Top());
+        const auto attr = cell->TextAttr();
+        const auto [foreground, background] = data->GetAttributeColors(attr);
+        const uint32_t flags = (attr.IsIntense() ? 1u : 0u) | (attr.IsItalic() ? 2u : 0u) | (attr.IsUnderlined() ? 4u : 0u) | (attr.IsCrossedOut() ? 8u : 0u);
+        const auto glyph = cell->Chars();
+        const auto cells = std::min(columns - x, cell->DbcsAttr() == DbcsAttribute::Leading ? 2u : 1u);
+        RETURN_HR_IF(E_BOUNDS, text.size() + glyph.size() > 1048576);
+        if (!runs.empty() && runs.back().y == y && runs.back().x + runs.back().cells == x &&
+            runs.back().foreground == foreground && runs.back().background == background && runs.back().flags == flags)
+        {
+            runs.back().cells += cells;
+            runs.back().length += static_cast<uint32_t>(glyph.size());
+        }
+        else
+        {
+            runs.push_back({ x, y, cells, foreground, background, flags, static_cast<uint32_t>(text.size()), static_cast<uint32_t>(glyph.size()) });
+        }
+        text.append(glyph);
+    }
+    const auto pixelSize = terminal->GetPreviewSize();
+    RETURN_HR_IF(E_PENDING, pixelSize.width <= 0 || pixelSize.height <= 0);
+    const auto bytes = static_cast<uint32_t>(32 + runs.size() * sizeof(Run) + text.size() * sizeof(wchar_t));
+    auto memory = static_cast<uint32_t*>(CoTaskMemAlloc(bytes));
+    RETURN_HR_IF(E_OUTOFMEMORY, !memory);
+    const uint32_t header[]{ bytes, 1, columns, rows, static_cast<uint32_t>(runs.size()), static_cast<uint32_t>(text.size()), static_cast<uint32_t>(pixelSize.width), static_cast<uint32_t>(pixelSize.height) };
+    memcpy(memory, header, sizeof(header));
+    auto cursor = reinterpret_cast<std::byte*>(memory) + sizeof(header);
+    memcpy(cursor, runs.data(), runs.size() * sizeof(Run));
+    memcpy(cursor + runs.size() * sizeof(Run), text.data(), text.size() * sizeof(wchar_t));
+    *snapshot = memory;
+    return S_OK;
+}
+CATCH_RETURN()
+
+void _stdcall TerminalFreePreviewSnapshot(void* snapshot)
+{
+    CoTaskMemFree(snapshot);
+}
+
 // The caller holds the terminal lock. Cells with the default background get the opacity as their
 // alpha (the renderer keeps the default background's alpha when transparency is enabled and forces
 // every other background opaque); a theme change resets the entry, so TerminalSetTheme calls this too.
@@ -1241,6 +1459,10 @@ try
     _CompositionTrace(L"HwndTerminal composition: CreateSurfaceFromHandle(0x%p) -> 0x%08X\n", handle.get(), static_cast<unsigned>(hr));
     THROW_IF_FAILED(hr);
     THROW_IF_FAILED(_compositionVisual->SetContent(surface.get()));
+    for (auto& [id, preview] : s_previews)
+    {
+        if (preview.source == this) THROW_IF_FAILED(preview.image->SetContent(surface.get()));
+    }
     _swapChainHandle = std::move(handle);
 
     _UpdateComposition();
@@ -1315,6 +1537,10 @@ try
         _CompositionTrace(L"HwndTerminal composition: visual of 0x%p hidden (root 0x%p)\n", hwnd, root);
     }
 
+    for (auto& [id, preview] : s_previews)
+    {
+        if (preview.source == this && preview.attached) LOG_IF_FAILED(_UpdatePreview(preview));
+    }
     THROW_IF_FAILED(device->Commit());
 }
 catch (...)
@@ -1326,6 +1552,18 @@ catch (...)
 void HwndTerminal::_DetachComposition() noexcept
 try
 {
+    bool removedPreview = false;
+    for (auto it = s_previews.begin(); it != s_previews.end();)
+    {
+        if (it->second.source != this) { ++it; continue; }
+        if (it->second.attached)
+        {
+            LOG_IF_FAILED(it->second.target->rootVisual->RemoveVisual(it->second.root.get()));
+            removedPreview = true;
+        }
+        it = s_previews.erase(it);
+    }
+    if (removedPreview && s_compositionDevice) LOG_IF_FAILED(s_compositionDevice->Commit());
     if (_compositionVisualAttached && _compositionTarget)
     {
         LOG_IF_FAILED(_compositionTarget->rootVisual->RemoveVisual(_compositionVisual.get()));
