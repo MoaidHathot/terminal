@@ -79,6 +79,16 @@ __declspec(dllexport) void _stdcall TerminalSetBackgroundOpacity(void* terminal,
 // library does this itself on WM_WINDOWPOSCHANGED; a host that re-parents the child to another top-level
 // window (SetParent) calls this afterwards.
 __declspec(dllexport) void _stdcall TerminalUpdateComposition(void* terminal);
+// Read-only previews. Calls run on the terminal window's UI thread. Preview tokens are
+// invalidated automatically when their source terminal is destroyed; destroying twice is safe.
+__declspec(dllexport) HRESULT _stdcall TerminalCreatePreview(HWND source, HWND destination, _Out_ uint64_t* token);
+__declspec(dllexport) HRESULT _stdcall TerminalUpdatePreview(uint64_t token, const RECT* destination, const RECT* clip, float radius);
+__declspec(dllexport) HRESULT _stdcall TerminalDestroyPreview(uint64_t token);
+// CoTaskMem-owned block: eight uint32 header fields (bytes, version, columns, rows, runs,
+// UTF-16 units, rendered pixel width/height), followed by 32-byte runs (x,y,cells,fg,bg,flags,textOffset,textLength)
+// and UTF-16 text. Colours are COLORREF; flags are bold=1, italic=2, underline=4, strike=8.
+__declspec(dllexport) HRESULT _stdcall TerminalGetPreviewSnapshot(HWND source, _Out_ void** snapshot);
+__declspec(dllexport) void _stdcall TerminalFreePreviewSnapshot(void* snapshot);
 };
 
 struct HwndTerminal : ::Microsoft::Console::Types::IControlAccessibilityInfo
@@ -105,6 +115,7 @@ public:
     void RegisterWriteCallback(const void _stdcall callback(wchar_t*));
     ::Microsoft::Console::Render::IRenderData* GetRenderData() const noexcept;
     HWND GetHwnd() const noexcept;
+    til::size GetPreviewSize() const noexcept { return _previewSize; }
 
     static LRESULT CALLBACK HwndTerminalWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) noexcept;
 
@@ -161,11 +172,15 @@ private:
     wil::unique_handle _swapChainHandle;
     std::mutex _pendingSwapChainLock;
     wil::unique_handle _pendingSwapChainHandle;
+    // The renderer's requested pixel size. A hidden HWND can be moved/resized by its
+    // host without resizing the terminal; thumbnails must fit the rendered surface.
+    til::size _previewSize{};
 
     friend HRESULT _stdcall CreateTerminal(HWND parentHwnd, _Out_ void** hwnd, _Out_ void** terminal);
     friend HRESULT _stdcall CreateTerminalEx(HWND parentHwnd, uint32_t flags, _Out_ void** hwnd, _Out_ void** terminal);
     friend void _stdcall TerminalSetBackgroundOpacity(void* terminal, float opacity);
     friend void _stdcall TerminalUpdateComposition(void* terminal);
+    friend HRESULT _stdcall TerminalCreatePreview(HWND source, HWND destination, uint64_t* token);
     friend HRESULT _stdcall TerminalTriggerResize(_In_ void* terminal, _In_ til::CoordType width, _In_ til::CoordType height, _Out_ til::size* dimensions);
     friend HRESULT _stdcall TerminalTriggerResizeWithDimension(_In_ void* terminal, _In_ til::size dimensions, _Out_ til::size* dimensionsInPixels);
     friend HRESULT _stdcall TerminalCalculateResize(_In_ void* terminal, _In_ til::CoordType width, _In_ til::CoordType height, _Out_ til::size* dimensions);

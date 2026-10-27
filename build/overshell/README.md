@@ -39,6 +39,9 @@ premultiplication fix - a translucent body is the theme's colour, not a red one)
 
 ## The patch series
 
+Local preview work adds composition mirrors and styled viewport snapshots; the ABI
+and validation contract are described in [PREVIEWS.md](PREVIEWS.md).
+
 Each commit on top of upstream, oldest first. A sync rebases exactly these.
 
 | # | What | Upstream files touched |
