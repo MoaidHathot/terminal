@@ -37,6 +37,8 @@ a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork buil
 the first package whose binaries are signed (see *Signing*); `1.26.260930.3` adds patch 4 (the
 premultiplication fix - a translucent body is the theme's colour, not a red one).
 `1.26.260930.4` adds read-only live composition mirrors and styled viewport snapshots.
+`1.26.260930.5` fixes the optimized Sixel palette lookup crash and gates releases
+on native image regression checks in both opaque and composed hosts.
 
 ## The patch series
 
@@ -54,8 +56,8 @@ Each commit on top of upstream, oldest first. A sync rebases exactly these.
 | 5 | **Read-only previews**: composition mirrors share the rendered surface without resizing the PTY; bounded, versioned snapshots retain cell colours/styles and wide glyphs for opaque-mode fallback. Preview tokens are released on disposal/source teardown and short-lived composition targets are pruned. See [PREVIEWS.md](PREVIEWS.md) for the ABI and automated evidence. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def` |
 | 6 | **Sixel palette lookup**: use the checked `std::array::at` accessor to avoid MSVC 19.51 optimizing the hardened byte-indexed `operator[]` into an unconditional fail-fast. Native image output remains enabled, with all 256 palette entries and STL hardening retained. The built-DLL regression runs in opaque and composed hosts before CI/release packaging. See [SIXEL.md](SIXEL.md). | `src/terminal/adapter/SixelParser.cpp` |
 
-**AI assistance disclosure:** the preview implementation and automated validation used
-AI assistance. The fork's maintainer explicitly authorized publication on 2026-10-28
+**AI assistance disclosure:** the preview implementation, Sixel correction and automated
+validation used AI assistance. The fork's maintainer explicitly authorized publication
 under `AGENTS.md`'s maintainer-permission provision.
 
 Why a child HWND stays: it keeps focus, keyboard, mouse (hit-testing is rect-based, so a window with
