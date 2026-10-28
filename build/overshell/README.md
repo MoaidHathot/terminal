@@ -52,6 +52,7 @@ Each commit on top of upstream, oldest first. A sync rebases exactly these.
 | 3 | **dcomp.dll for the composition path**: `AtlasEngine::_createSwapChain` loads `dcomp.dll` when no XAML host has (under WPF or plain Win32 `GetModuleHandle` returned null and the first frame threw, silently). A one-line fix worth sending upstream. | `src/renderer/atlas/AtlasEngine.r.cpp` |
 | 4 | **Per-channel premultiplication**: `u32ColorPremultiply` divided the packed red/blue pair by 255 as one integer, so blue's remainder spilled into red at every alpha but 0 and 255 - `#0C0C0C` at 0.85 came out `#400A0A` premultiplied, a visibly red body. Upstream never meets it (its default background carries alpha 0 or 255: `til::color` to `COLORREF` drops alpha); the composed mode's `TerminalSetBackgroundOpacity` is the first caller with an alpha in between. Each channel is now scaled on its own; `static_assert`s pin the five cases. Worth sending upstream as a correctness fix. | `src/renderer/atlas/Backend.h` |
 | 5 | **Read-only previews**: composition mirrors share the rendered surface without resizing the PTY; bounded, versioned snapshots retain cell colours/styles and wide glyphs for opaque-mode fallback. Preview tokens are released on disposal/source teardown and short-lived composition targets are pruned. See [PREVIEWS.md](PREVIEWS.md) for the ABI and automated evidence. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def` |
+| 6 | **Sixel palette lookup**: use the checked `std::array::at` accessor to avoid MSVC 19.51 optimizing the hardened byte-indexed `operator[]` into an unconditional fail-fast. Native image output remains enabled, with all 256 palette entries and STL hardening retained. The built-DLL regression runs in opaque and composed hosts before CI/release packaging. See [SIXEL.md](SIXEL.md). | `src/terminal/adapter/SixelParser.cpp` |
 
 **AI assistance disclosure:** the preview implementation and automated validation used
 AI assistance. The fork's maintainer explicitly authorized publication on 2026-10-28
@@ -145,6 +146,12 @@ is missing:
 ./build/overshell/Build.ps1 -Platform x64 -Wpf       # bin\x64\Release\Microsoft.Terminal.Control\, bin\...\WpfTerminalControl\
 ./build/overshell/Build.ps1 -Platform ARM64
 ./build/overshell/Pack.ps1 -Version 0.0.1-local       # artifacts\packages\OverShell.Terminal.Wpf.0.0.1-local.nupkg
+```
+
+Run the Sixel regression against the actual x64 release DLL after building:
+
+```powershell
+./build/overshell/Test-Sixel.ps1
 ```
 
 Every restore reads the repository's `NuGet.Config` and nothing else (`-ConfigFile` for
