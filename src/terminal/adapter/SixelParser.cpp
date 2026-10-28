@@ -622,7 +622,9 @@ void SixelParser::_defineColor(const size_t colorNumber, const COLORREF color)
 
 COLORREF SixelParser::_colorFromIndex(const IndexType tableIndex) const noexcept
 {
-    return til::at(_colorTable, tableIndex);
+    // MSVC 19.51 can turn hardened operator[] with a byte-sized index into an
+    // unconditional fail-fast under /O2. Keep the checked lookup explicit.
+    return _colorTable.at(static_cast<size_t>(tableIndex));
 }
 
 constexpr RGBQUAD SixelParser::_makeRGBQUAD(const COLORREF color) noexcept
