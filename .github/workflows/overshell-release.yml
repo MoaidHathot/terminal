@@ -247,7 +247,11 @@ jobs:
             "" \
             "Preview API and validation: https://github.com/MoaidHathot/terminal/blob/wpf-v${VERSION}/build/overshell/PREVIEWS.md" \
             "" \
-            "AI assistance disclosure: the preview implementation and automated validation used AI assistance; this fork's maintainer explicitly authorized its public publication under AGENTS.md.")"
+            "AI assistance disclosure: the fork-specific implementation and automated validation used AI assistance; this fork's maintainer explicitly authorized its public publication under AGENTS.md.")"
+          release_notes="build/overshell/RELEASE-${VERSION}.md"
+          if [[ -f "$release_notes" ]]; then
+            notes="$(cat "$release_notes")"$'\n\n'"${notes}"
+          fi
           # Idempotent, so a re-run after a failed nuget.org step does not stop here.
           if gh release view "wpf-v${VERSION}" >/dev/null 2>&1; then
             echo "release wpf-v${VERSION} exists; replacing its assets"

@@ -1,4 +1,4 @@
-# Sixel crash: checked palette lookup
+# Sixel crash: checked palette lookup (1.26.260930.5)
 
 ## Reproduction and diagnosis
 
@@ -57,9 +57,13 @@ The test reproduces the failure against `1.26.260930.4` and passes all **16**
 checks against the corrected optimized DLL. Both the CI and release workflows
 run it before collecting x64 build outputs.
 
+The fix ships in **OverShell.Terminal.Wpf 1.26.260930.5**, with signed x64 and
+ARM64 native binaries and both managed WPF target frameworks.
+
 OverShell also has a `sixel` self-test mode that sends images through a real ConPTY
 shell, checks actual red/blue pixels on the input desktop, and optionally runs a
 bounded application via `OVERSHELL_SIXEL_APP`.
 
-Diagnosis, implementation and automated verification used AI assistance. These
+Diagnosis, implementation and automated verification used AI assistance. The
+fork's maintainer explicitly authorized publication under `AGENTS.md`. These
 results describe automated tests, not independent human verification.
