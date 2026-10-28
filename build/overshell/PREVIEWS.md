@@ -1,6 +1,6 @@
-# Local terminal preview ABI
+# Terminal preview ABI (1.26.260930.4)
 
-This local extension adds read-only previews to the WPF/HwndTerminal host. It does
+This extension adds read-only previews to the WPF/HwndTerminal host. It does
 not resize the terminal, create another parser/session, or forward preview input.
 All entrypoints run on the terminal window's UI thread.
 
@@ -34,5 +34,14 @@ destroyed source.
 The OverShell consumer has `previewnative` checks for the ABI, colours/styles, wide
 Unicode, opaque fallback, unchanged grids, clipping and disposal. Input-desktop pixel
 checks verify red-to-green updates from a hidden source. `previewbench` supplies the
-baseline and per-stage performance protocol. These changes/packages remain local under
-this repository's contribution policy.
+baseline and per-stage performance protocol. The consumer's final validation passed
+518 C# tests, 43 on-screen preview checks, 39 opaque-mode checks and the existing UI
+regression suite. Performance evidence is recorded in OverShell's
+`docs/DASHBOARD-PREVIEWS.md`.
+
+## AI assistance disclosure
+
+The preview implementation and automated validation used AI assistance. This fork's
+maintainer explicitly authorized public publication on 2026-10-28 under the
+maintainer-permission provision in `AGENTS.md`. The reported checks are automated
+validation; they are not a claim of independent human verification.

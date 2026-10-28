@@ -19,5 +19,15 @@ Native symbols (`Microsoft.Terminal.Control.pdb`, ~80 MB per platform) are not i
 they are attached to the matching GitHub release at
 https://github.com/MoaidHathot/terminal/releases.
 
+## 1.26.260930.4: terminal previews
+
+Read-only DirectComposition mirrors share a terminal's rendered surface while keeping
+its original grid. Styled viewport snapshots retain colours, formatting and wide glyph
+widths for opaque terminals. The [preview ABI](https://github.com/MoaidHathot/terminal/blob/overshell/build/overshell/PREVIEWS.md)
+describes lifetime, threading and snapshot validation.
+
+AI assistance was used for the preview implementation and automated validation. The
+fork's maintainer explicitly authorized publication under its contribution policy.
+
 Licence: MIT, as upstream. Not affiliated with Microsoft; Windows Terminal is a trademark of
 Microsoft Corporation.

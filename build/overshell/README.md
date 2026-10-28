@@ -36,10 +36,11 @@ a release tag is `wpf-v<version>.<N>`. So `1.25.260302.1` is the first fork buil
 `v1.26.2734.0` (2026-09-30), the series rebased by the first sync; `1.26.260930.2` the same source,
 the first package whose binaries are signed (see *Signing*); `1.26.260930.3` adds patch 4 (the
 premultiplication fix - a translucent body is the theme's colour, not a red one).
+`1.26.260930.4` adds read-only live composition mirrors and styled viewport snapshots.
 
 ## The patch series
 
-Local preview work adds composition mirrors and styled viewport snapshots; the ABI
+Version `1.26.260930.4` adds composition mirrors and styled viewport snapshots; the ABI
 and validation contract are described in [PREVIEWS.md](PREVIEWS.md).
 
 Each commit on top of upstream, oldest first. A sync rebases exactly these.
@@ -50,6 +51,11 @@ Each commit on top of upstream, oldest first. A sync rebases exactly these.
 | 2 | **Composed rendering mode** (`TERMINAL_CREATE_COMPOSED`, `CreateTerminalEx`, `TerminalSetBackgroundOpacity`, `TerminalUpdateComposition`; `TerminalControl.UseComposition` / `BackgroundOpacity`): the terminal renders into a composition surface that the library wraps in a DirectComposition visual on the host's top-level window, over an input-only child HWND (`WS_EX_NOREDIRECTIONBITMAP`, which upstream itself adopted in 1.26), so the swap chain keeps its alpha and the default background can be translucent over the window's backdrop. One composition device per process, one target per top-level window; the visual follows the child's position, size, visibility and re-parenting. Existing callers see no change. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def`, `src/cascadia/WpfTerminalControl/{NativeMethods,TerminalContainer,TerminalControl.xaml}.cs`, and in the engine: `TargetSettings.undoXamlScale` + `AtlasEngine::SetUndoXamlScale` (the SwapChainPanel scale compensation gets an off switch: `common.h`, `AtlasEngine.{h,api.cpp,r.cpp}`) |
 | 3 | **dcomp.dll for the composition path**: `AtlasEngine::_createSwapChain` loads `dcomp.dll` when no XAML host has (under WPF or plain Win32 `GetModuleHandle` returned null and the first frame threw, silently). A one-line fix worth sending upstream. | `src/renderer/atlas/AtlasEngine.r.cpp` |
 | 4 | **Per-channel premultiplication**: `u32ColorPremultiply` divided the packed red/blue pair by 255 as one integer, so blue's remainder spilled into red at every alpha but 0 and 255 - `#0C0C0C` at 0.85 came out `#400A0A` premultiplied, a visibly red body. Upstream never meets it (its default background carries alpha 0 or 255: `til::color` to `COLORREF` drops alpha); the composed mode's `TerminalSetBackgroundOpacity` is the first caller with an alpha in between. Each channel is now scaled on its own; `static_assert`s pin the five cases. Worth sending upstream as a correctness fix. | `src/renderer/atlas/Backend.h` |
+| 5 | **Read-only previews**: composition mirrors share the rendered surface without resizing the PTY; bounded, versioned snapshots retain cell colours/styles and wide glyphs for opaque-mode fallback. Preview tokens are released on disposal/source teardown and short-lived composition targets are pruned. See [PREVIEWS.md](PREVIEWS.md) for the ABI and automated evidence. | `src/cascadia/TerminalControl/HwndTerminal.{cpp,hpp}`, `dll/Microsoft.Terminal.Control.def` |
+
+**AI assistance disclosure:** the preview implementation and automated validation used
+AI assistance. The fork's maintainer explicitly authorized publication on 2026-10-28
+under `AGENTS.md`'s maintainer-permission provision.
 
 Why a child HWND stays: it keeps focus, keyboard, mouse (hit-testing is rect-based, so a window with
 no pixels still gets the mouse), text services (IME) and UI Automation exactly as upstream has them;
