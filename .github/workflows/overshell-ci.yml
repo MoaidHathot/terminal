@@ -126,6 +126,10 @@ jobs:
       - name: Build (native${{ matrix.platform == 'x64' && ' + WPF' || '' }})
         run: ./build/overshell/Build.ps1 -Platform ${{ matrix.platform }} ${{ matrix.platform == 'x64' && '-Wpf' || '' }}
 
+      - name: Sixel regression (release DLL, opaque and composed)
+        if: matrix.platform == 'x64'
+        run: ./build/overshell/Test-Sixel.ps1
+
       - name: Collect outputs
         run: |
           New-Item -ItemType Directory -Force out/${{ matrix.platform }} | Out-Null
